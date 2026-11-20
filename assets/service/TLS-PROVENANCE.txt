@@ -1,0 +1,20 @@
+NULL_store HTTPS trust data
+
+Mozilla CA certificate store, converted by curl, dated 2026-11-05 (118 roots).
+Source: https://curl.se/ca/cacert-2026-11-05.pem
+SHA-256: 427c064216761a1e72a8b30f0d954d08cb6e4435a82091fb865afd20c8497285
+Published checksum: https://curl.se/ca/cacert-2026-11-05.pem.sha256
+Conversion and license: https://curl.se/docs/caextract.html
+License: Mozilla Public License 2.0, included in TLS-LICENSE.txt.
+Unmodified source data is included as cacert.pem.
+
+tools/embed_trust.py embeds complete CRLF PEM records into the app and daemon.
+The native HTTP context registers an array of SslPem pointers, retaining the
+records and backing strings for its entire lifetime. HTTPS requests use the
+keepalive connection path, retaining the custom native trust context.
+Certificate, hostname and validity checks remain enabled.
+
+API/ABI research references; no third-party application code was copied:
+https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/Http.h
+https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/blob/master/include/orbis/Ssl.h
+https://github.com/Xyhlo/SSPI/blob/dc6cb98ee0b1c68d67bfee581fcbcb241246f456/app/NativeHttp.cs

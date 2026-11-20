@@ -1,0 +1,5 @@
+#include "../src/service_client.h"
+#include <ctime>
+#include <iostream>
+static void sleepMs(int n){timespec t={n/1000,(n%1000)*1000000};nanosleep(&t,0);}
+int main(int argc,char**argv){if(argc<3)return 1;ServiceClient client(argv[1]);if(!client.start())return 2;for(int i=0;i<150;i++){if(client.isConnected())break;sleepMs(20);}if(!client.isConnected()){std::cerr<<client.connectionStatus()<<"\n";return 3;}if(std::string(argv[2])=="enqueue"){Game g;g.id=773;g.title="Generated service lifecycle test";g.url="https://ps4torrent.net/773-test.html";TorrentLink link={"local-generated.torrent","https://ps4torrent.net/index.php?do=download&id=775"};std::string why;if(!client.enqueue(g,link,"",why))return 4;uint64_t version=0;std::vector<DownloadRow>jobs;for(int i=0;i<150;i++){client.snapshot(version,jobs);if(!jobs.empty()){std::cout<<"Client exiting; transfer remains owned by service\n";return 0;}sleepMs(20);}return 5;}uint64_t version=0;std::vector<DownloadRow>jobs;for(int i=0;i<100;i++){client.snapshot(version,jobs);if(!jobs.empty()){std::cout<<jobs[0].id<<" "<<stateName(jobs[0].state)<<" "<<jobs[0].done<<"\n";return 0;}sleepMs(20);}return 6;}

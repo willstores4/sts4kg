@@ -1,0 +1,17 @@
+NULL_store's local installer adapts the task workflow and registration values
+documented by flatz's Remote Package Installer. This is a small OpenOrbis adapter;
+the original application's web server, remote control endpoints and proprietary
+SDK build files are not bundled.
+
+Author: flatz (Alexey Kulaev)
+Reference revision: f12834101553d0f42c36107cff2b3d1708574937
+https://github.com/flatz/ps4_remote_pkg_installer/blob/f12834101553d0f42c36107cff2b3d1708574937/installer.c
+https://github.com/flatz/ps4_remote_pkg_installer/blob/f12834101553d0f42c36107cff2b3d1708574937/pkg.h
+Native LP64 BGFT structures and API declarations:
+https://github.com/flatz/ps4_stub_lib_maker_v2/blob/master/include/bgft.h
+
+Adapted behavior: separate AppInstUtil/BGFT initialization, 1 MB BGFT heap,
+foreground-user selection, content-type mapping, patch-flag classification,
+DISABLE_CDN_QUERY_PARAM, 64-bit package size and task start/resume/progress.
+NULL_store uses the local StorageEx registration API for downloaded files,
+retains its task journal and guards updates that have no installed base game.
