@@ -231,8 +231,8 @@ static std::string translateBgftError(int r) {
     switch ((uint32_t)r) {
         case 0x80990088u: return apiError("Conteúdo já está instalado", r);
         case 0x80990086u: return apiError("Já existe uma tarefa pendente em Notificações", r);
-        case 0x80990015u:
-        case 0x80990004u: return apiError("Falha de rede ou URL inacessível pelo PS4", r);
+        case 0x80990015u: return apiError("Falha de rede ou URL inacessível pelo PS4", r);
+        case 0x80990004u: return apiError("Parâmetro ou resposta HTTP/PKG rejeitada pelo PS4 — tente L3 (Local)", r);
         case 0x80990039u:
         case 0x80A30026u:
         case 0x80990085u: return apiError("Espaço insuficiente no PS4", r);

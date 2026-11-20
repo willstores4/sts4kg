@@ -448,6 +448,95 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(len(imported_matches[0]["extra_links"]), 1)
         self.assertEqual(imported_matches[0]["extra_links"][0]["label"], "Update v1.1")
 
+    def test_06_proxy_head_and_ua_fallback(self):
+        pkg_bytes = bytearray(make_fake_pkg(content_id="IV0000-WGST00099_00-PROXYTEST0000001", total_size=8192))
+        for i in range(0x1000, 8192):
+            pkg_bytes[i] = (i * 7) % 251
+        blob = bytes(pkg_bytes)
+
+        class StrictUpstreamHandler(http.server.BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                # Simula origem que bloqueia método HEAD (405) e UA PlayStation 4 (403)
+                self.send_response(405)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                if "PlayStation" in (self.headers.get("User-Agent") or ""):
+                    self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                rng = self.headers.get("Range")
+                if self.path == "/strict.pkg" and rng and rng.startswith("bytes="):
+                    s, _, e = rng[6:].partition("-")
+                    start = int(s) if s else 0
+                    end = min(len(blob) - 1, int(e) if e else len(blob) - 1)
+                    chunk = blob[start : end + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(chunk)))
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(blob)}")
+                    self.end_headers()
+                    self.wfile.write(chunk)
+                    return
+                if self.path in ("/strict.pkg", "/norange.pkg"):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(blob)))
+                    self.end_headers()
+                    self.wfile.write(blob)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StrictUpstreamHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        up = f"http://127.0.0.1:{srv.server_port}"
+
+        for idx, path in enumerate(("/strict.pkg", "/norange.pkg")):
+            status, _, data = self.request("POST", "/api/admin/homebrews", {
+                "title": f"Proxy Strict {idx}",
+                "pkg_url": f"{up}{path}",
+                "content_id": "IV0000-WGST00099_00-PROXYTEST0000001",
+                "size_bytes": len(blob),
+                "proxy_pkg": True,
+            })
+            self.assertEqual(status, 201)
+            item_id = json.loads(data)["item"]["id"]
+
+            # HEAD deve cair no fallback GET Range=0-0 e devolver tamanho + Accept-Ranges
+            status, hdrs, body = self.request("HEAD", f"/api/pkg/{item_id}.pkg")
+            self.assertEqual(status, 200)
+            self.assertEqual(hdrs.get("Content-Length"), str(len(blob)))
+            self.assertEqual(hdrs.get("Accept-Ranges"), "bytes")
+            self.assertEqual(body, b"")
+
+            status, hdrs, body = self.request(
+                "HEAD", f"/api/pkg/{item_id}.pkg", headers={"Range": "bytes=0-31"}
+            )
+            self.assertEqual(status, 206)
+            self.assertEqual(hdrs.get("Content-Length"), "32")
+            self.assertEqual(hdrs.get("Content-Range"), f"bytes 0-31/{len(blob)}")
+            self.assertEqual(body, b"")
+
+            # GET com Range deve devolver fatia exata mesmo quando a origem ignora Range (/norange.pkg)
+            status, hdrs, part = self.request(
+                "GET", f"/api/pkg/{item_id}.pkg", headers={"Range": "bytes=16-63"}
+            )
+            self.assertEqual(status, 206)
+            self.assertEqual(hdrs.get("Content-Range"), f"bytes 16-63/{len(blob)}")
+            self.assertEqual(part, blob[16:64])
+
+            status, _, whole = self.request("GET", f"/api/pkg/{item_id}.pkg")
+            self.assertEqual(status, 200)
+            self.assertEqual(whole, blob)
+
 
 if __name__ == "__main__":
     unittest.main()
