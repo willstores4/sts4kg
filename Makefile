@@ -16,6 +16,8 @@ CC := $(LLVM)/clang++
 LD := $(PS4_LD)
 PKGTOOL ?= $(OO_PS4_TOOLCHAIN)/bin/$(OO_HOST)/PkgTool.Core
 export PKGTOOL
+# Garante build/ antes de qualquer regra (a ordem dos alvos varia em checkouts limpos).
+$(shell mkdir -p build)
 CONTENT_ID := IV0000-NULL00001_00-NULLSTOR00000000
 # Installer permissions used by flatz/ps4_remote_pkg_installer (Makefile AUTH_INFO).
 INSTALLER_AUTH_INFO := $(shell cat tools/installer-auth.hex)
