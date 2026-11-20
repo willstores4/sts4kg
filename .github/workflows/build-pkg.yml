@@ -91,7 +91,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="dev-${GITHUB_SHA::7}"; fi
           mkdir -p dist
-          cp build/IV0000-HBST00001_00-HBSTORE000000000.pkg "dist/HomebrewStore-PS4-${VER}.pkg"
+          cp build/IV0000-WGST00001_00-WGSTORE000000000.pkg "dist/HomebrewStore-PS4-${VER}.pkg"
           (cd dist && sha256sum *.pkg | tee SHA256SUMS.txt)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
