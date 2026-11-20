@@ -130,7 +130,7 @@ static std::string findResponseHeader(const std::string& allHeaders, const std::
 
 static bool performGet(const std::string& initial, std::string* outMemory, size_t cap,
                        const std::string& referer, const std::string& rangeHeader, bool capPartialOk,
-                       const std::string& destFile, uint64_t expectedBytes,
+                       const std::string& destFile, bool appendMode, uint64_t expectedBytes,
                        PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                        std::string& errorOut) {
     errorOut.clear();
@@ -201,8 +201,12 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                         int fd = -1;
                         std::string tmpPath;
                         if (!destFile.empty()) {
-                            tmpPath = destFile + ".part";
-                            fd = open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                            if (appendMode) {
+                                fd = open(destFile.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
+                            } else {
+                                tmpPath = destFile + ".part";
+                                fd = open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                            }
                             if (fd < 0) {
                                 failure = "open_dest";
                                 errorOut = "Erro ao criar arquivo de destino";
@@ -267,14 +271,16 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                             if (fd >= 0) {
                                 fsync(fd);
                                 close(fd);
-                                if (ok) {
-                                    if (rename(tmpPath.c_str(), destFile.c_str()) != 0) {
-                                        ok = false;
-                                        errorOut = "Erro ao finalizar arquivo PKG";
+                                if (!appendMode) {
+                                    if (ok) {
+                                        if (rename(tmpPath.c_str(), destFile.c_str()) != 0) {
+                                            ok = false;
+                                            errorOut = "Erro ao finalizar arquivo PKG";
+                                            unlink(tmpPath.c_str());
+                                        }
+                                    } else {
                                         unlink(tmpPath.c_str());
                                     }
-                                } else {
-                                    unlink(tmpPath.c_str());
                                 }
                             }
                         }
@@ -315,16 +321,22 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
 
 bool portalNetworkFetch(const std::string& initial, std::string& out, size_t cap, const std::string& referer) {
     std::string err;
-    return performGet(initial, &out, cap, referer, "", false, "", 0, nullptr, nullptr, nullptr, err);
+    return performGet(initial, &out, cap, referer, "", false, "", false, 0, nullptr, nullptr, nullptr, err);
 }
 
 bool portalNetworkFetchRange(const std::string& url, std::string& out, uint64_t offset, size_t length, std::string& error) {
     std::string range = "bytes=" + std::to_string(offset) + "-" + std::to_string(offset + length - 1);
-    return performGet(url, &out, length, "", range, true, "", 0, nullptr, nullptr, nullptr, error);
+    return performGet(url, &out, length, "", range, true, "", false, 0, nullptr, nullptr, nullptr, error);
 }
 
 bool portalNetworkDownloadFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                                PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                                std::string& error) {
-    return performGet(url, nullptr, 0, "", "", false, destPath, expectedBytes, progressCb, stopCb, user, error);
+    return performGet(url, nullptr, 0, "", "", false, destPath, false, expectedBytes, progressCb, stopCb, user, error);
+}
+
+bool portalNetworkAppendFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
+                             PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
+                             std::string& error) {
+    return performGet(url, nullptr, 0, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, error);
 }

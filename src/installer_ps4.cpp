@@ -27,6 +27,7 @@ using NullBGFT::Progress;
 extern "C" int bgftInit(Init*) __asm__("sceBgftServiceInit");
 extern "C" int bgftTerm() __asm__("sceBgftServiceTerm");
 extern "C" int bgftRegisterRemote(Params*, int*) __asm__("sceBgftServiceDownloadRegisterTask");
+extern "C" int bgftRegisterStore(Params*, int*, void*) __asm__("sceBgftServiceIntDownloadRegisterTaskStore");
 extern "C" int bgftRegisterDebug(Params*, int*) __asm__("sceBgftServiceIntDebugDownloadRegisterPkg");
 extern "C" int bgftRegisterStorage(ParamsEx*, int*) __asm__("sceBgftServiceIntDownloadRegisterTaskByStorageEx");
 extern "C" int bgftStart(int) __asm__("sceBgftServiceDownloadStartTask");
@@ -284,6 +285,47 @@ static bool registerRemoteTask(const InstallPackage& pkg, int& id, std::string& 
     return true;
 }
 
+static bool registerStoreTask(const InstallPackage& pkg, int& id, std::string& error) {
+    id = -1;
+    const char* type = NullBGFT::packageType(pkg.contentType);
+    if (!type) { error = "Tipo de pacote PS4 não suportado"; return false; }
+    if (!isHttpUrl(pkg.url)) { error = "URL do manifesto JSON inválida"; return false; }
+    if (!validPkgContentId(pkg.contentId)) { error = "Content ID inválido"; return false; }
+    if (!initialize(error)) return false;
+    int user = -1;
+    if (!foregroundUser(user, error)) return false;
+
+    NullBGFT::Params params = {};
+    params.userId = user;
+    params.entitlementType = 5;
+    params.id = pkg.contentId.c_str();
+    params.url = pkg.url.c_str();
+    params.name = pkg.name.c_str();
+    params.icon = pkg.iconUrl.c_str();
+    params.scenario = "0";
+    params.option = NullBGFT::DisableCDNQuery;
+    params.type = type;
+    params.subtype = "";
+    params.size = pkg.bytes;
+
+    unsigned char errInfo[0x100] = {};
+    installLog("BGFT Store register: url=%s content=%s type=%s size=%llu user=%d",
+               pkg.url.c_str(), pkg.contentId.c_str(), type, (unsigned long long)pkg.bytes, user);
+
+    int r = bgftRegisterStore(&params, &id, errInfo);
+    installLog("BGFT Store result: 0x%08X task=%d", (unsigned)r, id);
+    if (r) {
+        id = -1;
+        error = translateBgftError(r);
+        return false;
+    }
+    if (id < 0) {
+        error = "PS4 não retornou um ID de tarefa válido";
+        return false;
+    }
+    return true;
+}
+
 static bool registerStorageTask(const InstallPackage& pkg, int& id, std::string& error) {
     id = -1;
     const char* type = NullBGFT::packageType(pkg.contentType);
@@ -414,6 +456,7 @@ static bool fetchManifestUrl(const std::string& url, std::string& out, size_t ca
 InstallBackend ps4InstallBackend() {
     InstallBackend api;
     api.registerRemoteTask = registerRemoteTask;
+    api.registerStoreTask = registerStoreTask;
     api.registerStorageTask = registerStorageTask;
     api.startTask = startTask;
     api.pauseTask = pauseTask;
@@ -423,6 +466,7 @@ InstallBackend ps4InstallBackend() {
     api.fetchPkgHeader = fetchPkgHeader;
     api.fetchUrl = fetchManifestUrl;
     api.downloadPkgFile = portalNetworkDownloadFile;
+    api.appendPkgFile = portalNetworkAppendFile;
     api.notifySystem = notifySystem;
     return api;
 }

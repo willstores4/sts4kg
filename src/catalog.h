@@ -455,10 +455,18 @@ inline std::string firstJsonString(const MiniJson::Value& obj, std::initializer_
     return "";
 }
 
-inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string& baseUrl,
-                                  std::string& outPkgUrl, std::string& outContentId,
-                                  uint64_t& outSizeBytes, std::string& error) {
+struct PkgPiece {
+    std::string url;
+    uint64_t offset = 0;
+    uint64_t size = 0;
+};
+
+inline bool extractPkgManifestFromJson(const std::string& jsonText, const std::string& baseUrl,
+                                       std::string& outPkgUrl, std::vector<PkgPiece>& outPieces,
+                                       std::string& outContentId, uint64_t& outSizeBytes,
+                                       std::string& error) {
     outPkgUrl.clear();
+    outPieces.clear();
     MiniJson::Value root;
     if (!MiniJson::parse(jsonText, root)) {
         error = "Manifesto JSON inválido";
@@ -474,14 +482,40 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
     }
 
     std::string rawUrl = firstJsonString(*obj, {"pkg_url", "pkgUrl", "url", "pkg", "package", "download_url", "link"});
+    uint64_t piecesSum = 0;
+
     if (rawUrl.empty()) {
-        for (const char* arrKey : {"pieces", "packages", "items", "assets"}) {
+        if (auto* piecesArr = obj->get("pieces")) {
+            if (piecesArr->type == MiniJson::Value::Array) {
+                uint64_t runningOffset = 0;
+                for (const auto& entry : piecesArr->arrVal) {
+                    if (entry.type != MiniJson::Value::Object) continue;
+                    std::string u = firstJsonString(entry, {"url", "pkg_url", "pkgUrl", "download_url"});
+                    std::string resolved = resolveServerUrl(baseUrl, u);
+                    if (!isHttpUrl(resolved)) continue;
+                    PkgPiece piece;
+                    piece.url = resolved;
+                    if (auto* fo = entry.get("fileOffset")) piece.offset = fo->asUInt(runningOffset);
+                    else piece.offset = runningOffset;
+                    if (auto* fs = entry.get("fileSize")) piece.size = fs->asUInt(0);
+                    runningOffset = piece.offset + piece.size;
+                    piecesSum += piece.size;
+                    outPieces.push_back(std::move(piece));
+                }
+                if (!outPieces.empty()) {
+                    std::sort(outPieces.begin(), outPieces.end(), [](const PkgPiece& a, const PkgPiece& b) {
+                        return a.offset < b.offset;
+                    });
+                    outPkgUrl = outPieces[0].url;
+                }
+            }
+        }
+    }
+
+    if (rawUrl.empty() && outPieces.empty()) {
+        for (const char* arrKey : {"packages", "items", "assets"}) {
             if (auto* arr = obj->get(arrKey)) {
                 if (arr->type == MiniJson::Value::Array) {
-                    if (std::string(arrKey) == "pieces" && arr->arrVal.size() > 1) {
-                        error = "Manifesto dividido em múltiplas partes não suportado; use PKG único";
-                        return false;
-                    }
                     for (const auto& entry : arr->arrVal) {
                         if (entry.type != MiniJson::Value::Object) continue;
                         std::string candidate = firstJsonString(entry, {"pkg_url", "pkgUrl", "url", "browser_download_url", "download_url"});
@@ -498,7 +532,7 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
             }
         }
     }
-    if (rawUrl.empty()) {
+    if (rawUrl.empty() && outPieces.empty()) {
         if (auto* data = obj->get("data")) {
             if (data->type == MiniJson::Value::Object) {
                 rawUrl = firstJsonString(*data, {"pkg_url", "pkgUrl", "url", "pkg", "download_url"});
@@ -506,9 +540,11 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
         }
     }
 
-    outPkgUrl = resolveServerUrl(baseUrl, rawUrl);
+    if (outPkgUrl.empty()) {
+        outPkgUrl = resolveServerUrl(baseUrl, rawUrl);
+    }
     if (!isHttpUrl(outPkgUrl)) {
-        error = "Campo 'url'/'pkg_url' ausente ou inválido no JSON";
+        error = "Campo 'url'/'pkg_url' ou 'pieces' ausente/inválido no JSON";
         return false;
     }
     std::string cid = firstJsonString(*obj, {"content_id", "contentId", "id"});
@@ -520,7 +556,15 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
     } else if (auto* sz2 = obj->get("size")) {
         if (sz2->type == MiniJson::Value::Number && sz2->asUInt() > 0) outSizeBytes = sz2->asUInt();
     }
+    if (outSizeBytes == 0 && piecesSum > 0) outSizeBytes = piecesSum;
     return true;
+}
+
+inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string& baseUrl,
+                                  std::string& outPkgUrl, std::string& outContentId,
+                                  uint64_t& outSizeBytes, std::string& error) {
+    std::vector<PkgPiece> pieces;
+    return extractPkgManifestFromJson(jsonText, baseUrl, outPkgUrl, pieces, outContentId, outSizeBytes, error);
 }
 
 inline bool parseCatalogJson(const std::string& jsonText, const std::string& serverBase,

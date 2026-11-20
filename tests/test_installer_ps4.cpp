@@ -3,7 +3,7 @@
 #include <cassert>
 #include <iostream>
 
-static int initCalls = 0, registerRemoteCalls = 0, registerStorageCalls = 0, startCalls = 0, resumeCalls = 0, pauseCalls = 0, stopCalls = 0, initialCalls = 0, termCalls = 0, nativeCalls = 0;
+static int initCalls = 0, registerRemoteCalls = 0, registerStoreCalls = 0, registerStorageCalls = 0, startCalls = 0, resumeCalls = 0, pauseCalls = 0, stopCalls = 0, initialCalls = 0, termCalls = 0, nativeCalls = 0;
 static int initResult = 0, registerResult = 0, taskId = 42, foregroundResult = 0, mockForegroundUser = 7, initialResult = 0, initialUser = 9, progressResult = 0, startResult = 0, resumeResult = 0;
 static uint32_t bgftModuleResult = 0;
 static int nativeResult = 101, nativeStartResult = 0;
@@ -24,6 +24,10 @@ bool portalNetworkFetch(const std::string&, std::string& out, size_t, const std:
 }
 bool portalNetworkDownloadFile(const std::string&, const std::string&, uint64_t,
                                PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) {
+    return true;
+}
+bool portalNetworkAppendFile(const std::string&, const std::string&, uint64_t,
+                             PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) {
     return true;
 }
 
@@ -65,6 +69,14 @@ extern "C" int bgftRegisterRemote(Params* p, int* id) {
     ++registerRemoteCalls;
     assert(p->userId == expectedUser && p->entitlementType == 5);
     assert(std::string(p->url) == "http://192.168.1.2:8765/pkgs/hb.pkg");
+    assert(std::string(p->type) == expectedType && p->option == 0x10000);
+    *id = taskId;
+    return registerResult;
+}
+extern "C" int bgftRegisterStore(Params* p, int* id, void* errInfo) {
+    ++registerStoreCalls;
+    assert(p->userId == expectedUser && p->entitlementType == 5 && errInfo != nullptr);
+    assert(std::string(p->url) == "http://192.168.1.2:8765/manifests/split.manifest.json");
     assert(std::string(p->type) == expectedType && p->option == 0x10000);
     *id = taskId;
     return registerResult;
@@ -115,7 +127,11 @@ int main() {
 
     std::string error;
     int id = 123;
+    assert(api.appendPkgFile != nullptr);
     assert(api.registerRemoteTask(pkg, id, error) && id == 42 && registerRemoteCalls == 1 && initCalls == 1);
+    InstallPackage storePkg = pkg;
+    storePkg.url = "http://192.168.1.2:8765/manifests/split.manifest.json";
+    assert(api.registerStoreTask(storePkg, id, error) && id == 42 && registerStoreCalls == 1);
     assert(api.registerStorageTask(pkg, id, error) && id == 42 && registerStorageCalls == 1 && initCalls == 1);
     for (auto type : {0x1a, 0x1b, 0x1c, 0x1e}) {
         pkg.contentType = type;

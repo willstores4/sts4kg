@@ -70,6 +70,7 @@ inline std::string installStatusText(const InstallPackage& p) {
 
 struct InstallBackend {
     bool (*registerRemoteTask)(const InstallPackage&, int&, std::string&) = nullptr;
+    bool (*registerStoreTask)(const InstallPackage&, int&, std::string&) = nullptr;
     bool (*registerStorageTask)(const InstallPackage&, int&, std::string&) = nullptr;
     bool (*startTask)(int, std::string&) = nullptr;
     bool (*pauseTask)(int, std::string&) = nullptr;
@@ -80,6 +81,8 @@ struct InstallBackend {
     bool (*fetchUrl)(const std::string&, std::string&, size_t, std::string&) = nullptr;
     bool (*downloadPkgFile)(const std::string&, const std::string&, uint64_t,
                             PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) = nullptr;
+    bool (*appendPkgFile)(const std::string&, const std::string&, uint64_t,
+                          PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) = nullptr;
     void (*notifySystem)(const std::string&) = nullptr;
 };
 
@@ -93,6 +96,8 @@ class PackageInstaller {
         PackageInstaller* self = nullptr;
         int id = 0;
         uint64_t lastVersionBump = 0;
+        uint64_t baseOffset = 0;
+        uint64_t totalOverride = 0;
     };
 
     std::string root;

@@ -11,4 +11,7 @@ bool portalNetworkFetchRange(const std::string& url, std::string& out, uint64_t 
 bool portalNetworkDownloadFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                                PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                                std::string& error);
+bool portalNetworkAppendFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
+                             PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
+                             std::string& error);
 void portalNetworkTrace(const char*, ...);

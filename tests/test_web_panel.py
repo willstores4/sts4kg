@@ -218,6 +218,98 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 206)
         self.assertEqual(head_bytes[:4], b"\x7fCNT")
 
+    def test_split_manifest_proxy_merging_and_cross_boundary_range(self):
+        # Constrói um PKG de 8192 bytes dividido em 2 peças de 4096 bytes cada
+        full_pkg = bytearray(make_fake_pkg(content_id="IV0000-HBST00088_00-SPLITPKG00000001", total_size=8192))
+        for i in range(0x1000, 8192):
+            full_pkg[i] = i % 251
+        part0 = bytes(full_pkg[:4096])
+        part1 = bytes(full_pkg[4096:])
+
+        class SplitHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/split.manifest.json":
+                    base = f"http://127.0.0.1:{self.server.server_port}"
+                    payload = json.dumps({
+                        "originalFileSize": 8192,
+                        "numberOfSplitFiles": 2,
+                        "pieces": [
+                            {"url": f"{base}/part_0.pkg", "fileOffset": 0, "fileSize": 4096},
+                            {"url": f"{base}/part_1.pkg", "fileOffset": 4096, "fileSize": 4096},
+                        ],
+                    }).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                blob = part0 if self.path == "/part_0.pkg" else part1 if self.path == "/part_1.pkg" else None
+                if blob is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                rng = self.headers.get("Range")
+                if rng and rng.startswith("bytes="):
+                    s, _, e = rng[6:].partition("-")
+                    start = int(s) if s else 0
+                    end = int(e) if e else len(blob) - 1
+                    chunk = blob[start : end + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(chunk)))
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(blob)}")
+                    self.end_headers()
+                    self.wfile.write(chunk)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(blob)))
+                    self.end_headers()
+                    self.wfile.write(blob)
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), SplitHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        split_url = f"http://127.0.0.1:{srv.server_port}/split.manifest.json"
+
+        # 1. inspect-pkg reconhece as 2 partes e recomenda proxy
+        status, _, data = self.request("POST", "/api/admin/inspect-pkg", {"pkg_url": split_url})
+        self.assertEqual(status, 200)
+        info = json.loads(data)
+        self.assertTrue(info["from_json"])
+        self.assertEqual(info["split_pieces"], 2)
+        self.assertTrue(info["recommend_proxy"])
+        self.assertEqual(info["size_bytes"], 8192)
+        self.assertEqual(info["content_id"], "IV0000-HBST00088_00-SPLITPKG00000001")
+
+        # 2. Cadastrar sem passar proxy_pkg ativa proxy automaticamente via manifesto dividido
+        status, _, data = self.request(
+            "POST", "/api/admin/homebrews", {"title": "Split HB", "pkg_url": split_url}
+        )
+        self.assertEqual(status, 201)
+        created = json.loads(data)["item"]
+        self.assertEqual(created["proxy_pkg"], 1)
+
+        # 3. Export e GET completo + Range cruzando fronteira entre part_0 e part_1 (bytes 3900-4300)
+        status, _, data = self.request("GET", "/api/export.json")
+        self.assertEqual(status, 200)
+        proxy_path = urllib.parse.urlparse(json.loads(data)["items"][0]["pkg_url"]).path
+
+        status, hdrs, cross = self.request("GET", proxy_path, headers={"Range": "bytes=3900-4300"})
+        self.assertEqual(status, 206)
+        self.assertEqual(hdrs.get("Content-Range"), "bytes 3900-4300/8192")
+        self.assertEqual(cross, bytes(full_pkg[3900:4301]))
+
+        status, _, whole = self.request("GET", proxy_path)
+        self.assertEqual(status, 200)
+        self.assertEqual(whole, bytes(full_pkg))
+
 
 if __name__ == "__main__":
     unittest.main()

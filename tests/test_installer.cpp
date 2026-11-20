@@ -2,12 +2,13 @@
 #include "../src/queue_store.h"
 #include <atomic>
 #include <cassert>
+#include <fcntl.h>
 #include <iostream>
 #include <sys/stat.h>
 #include <unistd.h>
 
 static std::string root;
-static std::atomic<int> remoteReg(0), storageReg(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), notified(0);
+static std::atomic<int> remoteReg(0), storeReg(0), storageReg(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), appended(0), notified(0);
 
 static void pauseMs(int n) {
     struct timespec ts = {n / 1000, (n % 1000) * 1000000};
@@ -36,6 +37,13 @@ static bool regRemote(const InstallPackage& p, int& id, std::string&) {
     ++remoteReg;
     return true;
 }
+static bool regStore(const InstallPackage& p, int& id, std::string&) {
+    assert(p.contentId == "IV0000-TEST00001_00-TESTPACKAGE00001");
+    assert(p.bytes == 4096);
+    id = 44;
+    ++storeReg;
+    return true;
+}
 static bool regStorage(const InstallPackage& p, int& id, std::string&) {
     assert(p.contentId == "IV0000-TEST00001_00-TESTPACKAGE00001");
     id = 43;
@@ -54,7 +62,11 @@ static bool pollFn(int, uint64_t& done, uint64_t& total, int& percent, bool& com
     complete = true;
     return true;
 }
-static bool fetchUrlFn(const std::string&, std::string& out, size_t, std::string&) {
+static bool fetchUrlFn(const std::string& url, std::string& out, size_t, std::string&) {
+    if (url.find("split.manifest.json") != std::string::npos) {
+        out = R"({"originalFileSize":4096,"numberOfSplitFiles":2,"pieces":[{"url":"http://192.168.1.2:8765/pkgs/split_0.pkg","fileOffset":0,"fileSize":2048},{"url":"http://192.168.1.2:8765/pkgs/split_1.pkg","fileOffset":2048,"fileSize":2048}]})";
+        return true;
+    }
     out = R"({"pkg_url":"http://192.168.1.2:8765/pkgs/resolved.pkg"})";
     return true;
 }
@@ -63,11 +75,32 @@ static bool fetchHeader(const std::string&, std::string& out, std::string&) {
     out = makePkgBytes(4096);
     return true;
 }
-static bool dlFile(const std::string&, const std::string& dest, uint64_t,
+static bool dlFile(const std::string& url, const std::string& dest, uint64_t,
                    PortalDownloadProgressFn cb, PortalDownloadStopFn, void* user, std::string&) {
     ++downloaded;
+    if (url.find("split_0.pkg") != std::string::npos) {
+        if (cb) cb(user, 2048, 2048);
+        return durableReplace(dest, makePkgBytes(4096).substr(0, 2048));
+    }
     if (cb) cb(user, 2048, 4096);
     return durableReplace(dest, makePkgBytes(4096));
+}
+static bool appendFile(const std::string& url, const std::string& dest, uint64_t,
+                       PortalDownloadProgressFn cb, PortalDownloadStopFn, void* user, std::string&) {
+    assert(url.find("split_1.pkg") != std::string::npos);
+    ++appended;
+    std::string tail = makePkgBytes(4096).substr(2048);
+    int fd = open(dest.c_str(), O_WRONLY | O_APPEND);
+    if (fd < 0) return false;
+    size_t off = 0;
+    while (off < tail.size()) {
+        ssize_t n = write(fd, tail.data() + off, tail.size() - off);
+        if (n <= 0) { close(fd); return false; }
+        off += (size_t)n;
+    }
+    close(fd);
+    if (cb) cb(user, 2048, 2048);
+    return true;
 }
 static void notify(const std::string&) { ++notified; }
 
@@ -100,6 +133,7 @@ int main() {
 
     InstallBackend api;
     api.registerRemoteTask = regRemote;
+    api.registerStoreTask = regStore;
     api.registerStorageTask = regStorage;
     api.startTask = start;
     api.pauseTask = pauseFn;
@@ -109,6 +143,7 @@ int main() {
     api.fetchPkgHeader = fetchHeader;
     api.fetchUrl = fetchUrlFn;
     api.downloadPkgFile = dlFile;
+    api.appendPkgFile = appendFile;
     api.notifySystem = notify;
 
     {
@@ -168,6 +203,41 @@ int main() {
             pauseMs(10);
         }
         assert(done && remoteReg == 2);
+
+        // Testar manifesto dividido em múltiplas peças via LocalStorageEx (download + append)
+        Game g4 = g;
+        g4.id = 4;
+        g4.title = "Homebrew Split Local";
+        g4.url = "http://192.168.1.2:8765/manifests/split.manifest.json";
+        int id4 = installer.enqueueHomebrew(g4, InstallMode::LocalStorageEx, msg);
+        assert(id4 > id3);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id4 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && downloaded == 2 && appended == 1 && storageReg == 2);
+
+        // Testar manifesto dividido via RemoteBgft usando registerStoreTask
+        Game g5 = g;
+        g5.id = 5;
+        g5.title = "Homebrew Split Store";
+        g5.url = "http://192.168.1.2:8765/manifests/split.manifest.json";
+        int id5 = installer.enqueueHomebrew(g5, InstallMode::RemoteBgft, msg);
+        assert(id5 > id4);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id5 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && storeReg == 1);
+
+        installer.removeTask(id5);
+        installer.removeTask(id4);
         installer.removeTask(id3);
         installer.removeTask(id2);
         installer.removeTask(id1);

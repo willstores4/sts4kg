@@ -369,12 +369,14 @@ void PackageInstaller::onDownloadProgress(void* user, uint64_t done, uint64_t to
     if (!ctx || !ctx->self) return;
     pthread_mutex_lock(&ctx->self->mutex);
     if (auto* t = ctx->self->findLocked(ctx->id)) {
-        t->doneBytes = done;
-        if (total > 0) t->bytes = total;
-        int pct = total > 0 ? (int)std::min<uint64_t>(99, done * 100 / total) : -1;
-        if (pct != t->percent || done - ctx->lastVersionBump >= 512 * 1024) {
+        uint64_t overallDone = ctx->baseOffset + done;
+        uint64_t overallTotal = ctx->totalOverride > 0 ? ctx->totalOverride : total;
+        t->doneBytes = overallDone;
+        if (overallTotal > 0) t->bytes = overallTotal;
+        int pct = overallTotal > 0 ? (int)std::min<uint64_t>(99, overallDone * 100 / overallTotal) : -1;
+        if (pct != t->percent || overallDone < ctx->lastVersionBump || overallDone - ctx->lastVersionBump >= 512 * 1024) {
             t->percent = pct;
-            ctx->lastVersionBump = done;
+            ctx->lastVersionBump = overallDone;
             ++ctx->self->version;
         }
     }
@@ -418,6 +420,9 @@ void PackageInstaller::loop() {
             std::string error;
             bool ok = true;
 
+            std::string manifestUrl;
+            std::vector<PkgPiece> pieces;
+            uint64_t manifestSizeTotal = 0;
             // Se o link for um manifesto .json, resolve para o link direto do .pkg (até 2 saltos)
             for (int hop = 0; hop < 2 && ok && endsWithJson(job.url); ++hop) {
                 if (!backend.fetchUrl) {
@@ -425,6 +430,7 @@ void PackageInstaller::loop() {
                     ok = false;
                     break;
                 }
+                manifestUrl = job.url;
                 std::string jsonBody;
                 if (!backend.fetchUrl(job.url, jsonBody, 1024 * 1024, error)) {
                     if (error.empty()) error = "Não foi possível baixar o manifesto JSON";
@@ -433,16 +439,20 @@ void PackageInstaller::loop() {
                 }
                 std::string resolvedUrl, manifestCid;
                 uint64_t manifestSize = 0;
-                if (!extractPkgUrlFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, manifestCid, manifestSize, error)) {
+                std::vector<PkgPiece> hopPieces;
+                if (!extractPkgManifestFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, hopPieces, manifestCid, manifestSize, error)) {
                     ok = false;
                     break;
                 }
                 job.url = resolvedUrl;
+                pieces = hopPieces;
+                if (manifestSize > 0) manifestSizeTotal = manifestSize;
                 if (!validPkgContentId(job.contentId) && validPkgContentId(manifestCid)) {
                     job.contentId = manifestCid;
                     job.titleId = manifestCid.substr(7, 9);
                 }
-                if (job.bytes == 0 && manifestSize > 0) job.bytes = manifestSize;
+                if (manifestSize > 0 && (job.bytes == 0 || pieces.size() > 1)) job.bytes = manifestSize;
+                if (pieces.size() > 1) break;
             }
 
             if (ok && job.mode == InstallMode::RemoteBgft) {
@@ -452,16 +462,22 @@ void PackageInstaller::loop() {
                     if (backend.fetchPkgHeader(job.url, header, error)) {
                         std::string trimmed = trimStr(header);
                         if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[') && backend.fetchUrl) {
+                            manifestUrl = job.url;
                             std::string jsonBody, resolvedUrl, manifestCid;
                             uint64_t manifestSize = 0;
+                            std::vector<PkgPiece> sniffPieces;
                             if (backend.fetchUrl(job.url, jsonBody, 1024 * 1024, error) &&
-                                extractPkgUrlFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, manifestCid, manifestSize, error)) {
+                                extractPkgManifestFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, sniffPieces, manifestCid, manifestSize, error)) {
                                 job.url = resolvedUrl;
+                                pieces = sniffPieces;
                                 if (validPkgContentId(manifestCid)) {
                                     job.contentId = manifestCid;
                                     job.titleId = manifestCid.substr(7, 9);
                                 }
-                                if (manifestSize > 0) job.bytes = manifestSize;
+                                if (manifestSize > 0) {
+                                    manifestSizeTotal = manifestSize;
+                                    job.bytes = manifestSize;
+                                }
                                 header.clear();
                                 if (!backend.fetchPkgHeader(job.url, header, error)) ok = false;
                             } else {
@@ -475,7 +491,7 @@ void PackageInstaller::loop() {
                             if (parsePkgHeaderBytes((const unsigned char*)header.data(), header.size(), cid, tid, sz, ctype, cflags, error)) {
                                 job.contentId = cid;
                                 job.titleId = tid;
-                                job.bytes = sz;
+                                if (sz > 0) job.bytes = sz;
                                 job.contentType = ctype;
                                 job.contentFlags = cflags;
                                 job.patch = NullBGFT::isPatch(ctype, cflags);
@@ -493,23 +509,80 @@ void PackageInstaller::loop() {
                     ok = false;
                 }
                 if (ok) {
-                    ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
+                    if (pieces.size() > 1 && !manifestUrl.empty()) {
+                        job.url = manifestUrl;
+                        if (job.bytes == 0 && manifestSizeTotal > 0) job.bytes = manifestSizeTotal;
+                        if (backend.registerStoreTask) {
+                            ok = backend.registerStoreTask(job, job.taskId, error) && job.taskId >= 0;
+                            if (!ok && error.find("proxy") == std::string::npos) {
+                                error += " — Ative 'Fazer proxy pelo painel' no painel web ou use L3 (Local)";
+                            }
+                        } else {
+                            error = "Manifesto dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
+                            ok = false;
+                        }
+                    } else {
+                        ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
+                    }
                 }
             } else if (ok) {
                 std::string dir = root + "/downloads/" + std::to_string(job.id);
                 mkdir(dir.c_str(), 0777);
-                DownloadCtx ctx;
-                ctx.self = this;
-                ctx.id = job.id;
-                ctx.lastVersionBump = 0;
-                if (!backend.downloadPkgFile ||
-                    !backend.downloadPkgFile(job.url, job.path, job.bytes, onDownloadProgress, onDownloadStop, &ctx, error)) {
-                    ok = false;
+                if (pieces.size() > 1) {
+                    uint64_t totalSz = job.bytes > 0 ? job.bytes : manifestSizeTotal;
+                    if (totalSz == 0) {
+                        for (const auto& pc : pieces) totalSz += pc.size;
+                    }
+                    uint64_t offsetAccum = 0;
+                    for (size_t i = 0; i < pieces.size() && ok; ++i) {
+                        DownloadCtx ctx;
+                        ctx.self = this;
+                        ctx.id = job.id;
+                        ctx.lastVersionBump = 0;
+                        ctx.baseOffset = offsetAccum;
+                        ctx.totalOverride = totalSz;
+                        bool pieceOk = false;
+                        if (i == 0) {
+                            pieceOk = backend.downloadPkgFile &&
+                                      backend.downloadPkgFile(pieces[i].url, job.path, pieces[i].size,
+                                                              onDownloadProgress, onDownloadStop, &ctx, error);
+                        } else {
+                            pieceOk = backend.appendPkgFile &&
+                                      backend.appendPkgFile(pieces[i].url, job.path, pieces[i].size,
+                                                            onDownloadProgress, onDownloadStop, &ctx, error);
+                        }
+                        if (!pieceOk) {
+                            if (error.empty()) error = "Falha ao baixar parte " + std::to_string(i + 1) + " do PKG";
+                            ok = false;
+                        } else if (pieces[i].size > 0) {
+                            offsetAccum += pieces[i].size;
+                        } else {
+                            struct stat st;
+                            if (stat(job.path.c_str(), &st) == 0 && st.st_size >= 0) {
+                                offsetAccum = (uint64_t)st.st_size;
+                            }
+                        }
+                    }
+                    if (ok) {
+                        ok = inspectPackage(job.path, job, error) &&
+                             backend.registerStorageTask &&
+                             backend.registerStorageTask(job, job.taskId, error) &&
+                             job.taskId >= 0;
+                    }
                 } else {
-                    ok = inspectPackage(job.path, job, error) &&
-                         backend.registerStorageTask &&
-                         backend.registerStorageTask(job, job.taskId, error) &&
-                         job.taskId >= 0;
+                    DownloadCtx ctx;
+                    ctx.self = this;
+                    ctx.id = job.id;
+                    ctx.lastVersionBump = 0;
+                    if (!backend.downloadPkgFile ||
+                        !backend.downloadPkgFile(job.url, job.path, job.bytes, onDownloadProgress, onDownloadStop, &ctx, error)) {
+                        ok = false;
+                    } else {
+                        ok = inspectPackage(job.path, job, error) &&
+                             backend.registerStorageTask &&
+                             backend.registerStorageTask(job, job.taskId, error) &&
+                             job.taskId >= 0;
+                    }
                 }
             }
 
