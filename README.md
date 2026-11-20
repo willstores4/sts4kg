@@ -1,97 +1,56 @@
-<div align="center">
-  <img src="screenshots/nullstore-logo.png" width="160" alt="NULL_store logo">
-  <h1>NULL_store</h1>
-  <p><strong>PS4 homebrew game catalogue and BitTorrent download manager for HEN-enabled consoles.</strong></p>
-  <p>Browse game listings, queue torrent downloads, install compatible PKG files, or keep transfers running with the optional background service.</p>
-  <p>YOUR SYSTEM. YOUR RULES.</p>
-  <p>
-    <a href="../../releases/latest"><img alt="Download PS4 packages" src="https://img.shields.io/badge/Download-PS4%20PKGs-087652?style=for-the-badge"></a>
-    <a href="https://www.youtube.com/watch?v=04Qp9h_wZIk"><img alt="Watch the video" src="https://img.shields.io/badge/Watch-Video-087652?style=for-the-badge"></a>
-    <a href="ROADMAP.md"><img alt="View the roadmap" src="https://img.shields.io/badge/View-Roadmap-12332A?style=for-the-badge"></a>
-    <a href="TESTING.md"><img alt="Read the test guide" src="https://img.shields.io/badge/Read-Test%20guide-12332A?style=for-the-badge"></a>
-  </p>
-</div>
+# Homebrew Store PS4 + Painel Web de Gerenciamento
 
-![PS4 homebrew game catalogue in NULL_store](screenshots/catalogue.png)
+Loja de homebrews para PS4 com **Painel Web de gerenciamento** integrado e instalação em background diretamente nas **Notificações do PS4** (via API nativa BGFT).
 
-## Watch NULL_store in action
+## O que este projeto inclui
 
-[![Watch the NULL_store video on YouTube](https://img.youtube.com/vi/04Qp9h_wZIk/hqdefault.jpg)](https://www.youtube.com/watch?v=04Qp9h_wZIk)
+1. **App PS4 (`HomebrewStore-PS4-*.pkg`)**
+   - Sincroniza categorias, links de `.pkg`, metadados e capas diretamente do Painel Web (`GET /api/catalog.json`).
+   - Navegação por **Categorias dinâmicas** (`L1` / `R1`), busca via teclado nativo do PS4 (`TRIÂNGULO`), favoritos (`QUADRADO`) e ordenação (`TOUCHPAD`).
+   - **Instalação em Background nas Notificações do PS4 (`X`)**: registra o pacote na fila nativa do sistema (`sceBgftServiceDownloadRegisterTask` + `sceBgftServiceDownloadStartTask`) para que o PS4 baixe e instale em segundo plano nas Notificações.
+   - **Modo alternativo (`L3` nos detalhes)**: baixa o `.pkg` dentro do app e instala localmente via `StorageEx`.
+   - **Configuração de IP/URL no próprio PS4 (`L3` na loja)**: edite o endereço do servidor (padrão `http://192.168.1.2:8765`) a qualquer momento sem recompilar o PKG.
 
-[Watch the video on YouTube](https://www.youtube.com/watch?v=04Qp9h_wZIk).
+2. **Painel Web de Gerenciamento (`web-panel/`)**
+   - Interface web para **adicionar, editar, ocultar e remover homebrews, links `.pkg`, capas e categorias**.
+   - Aceita **links HTTP/HTTPS externos** ou **upload direto de arquivos `.pkg` e capas** pelo navegador.
+   - Detecta automaticamente `Content ID`, tipo e tamanho do `.pkg` ao inspecionar o cabeçalho `\x7FCNT`.
+   - Converte capas enviadas ou baixadas para JPEG compatível com o PS4 e serve arquivos `.pkg` com suporte completo a `Range` (`206 Partial Content`) e proxy HTTP opcional para links HTTPS externos.
 
-> **Keep downloads running after you close NULL_store.** Install and start the optional Background Service, then confirm Downloads shows **Connected**. Transfers can continue after the store closes while the PS4 stays awake and HEN remains active. Without the connected service, keep NULL_store open. Rest mode is not supported.
+---
 
-## Install a downloaded package from NULL_store
+## Como rodar o Painel Web
 
-When a torrent is complete, highlight it in **Downloads**, press **Triangle**, choose a compatible complete `.pkg`, and confirm. NULL_store starts and tracks the PS4's native install task. Check PS4 Notifications for the system result. The console may not provide a percentage, so the status can move from **Installing** to **Installed** without showing intermediate progress.
+Requer **Python 3.10+** (opcionalmente `pip install pillow` para converter capas WebP/PNG automaticamente em JPEG).
 
-Only compatible, complete PKG files can be installed this way. Archives and split packages need to be extracted or joined first. Install a base game before its updates or DLC.
+### Windows
+Dê um duplo clique em `web-panel/iniciar_painel.bat` ou execute:
+```powershell
+cd web-panel
+python server.py --port 8765
+```
 
-## Get started
+### Linux / macOS
+```bash
+cd web-panel
+./iniciar_painel.sh --port 8765
+```
 
-1. Download and install the [NULL_store PKG](../../releases/latest/download/NULL_store-PS4-1.0.pkg) with HEN active.
-2. Open **NULL_store** from the home screen. Browse the catalogue, search with **Triangle**, or save favorites with **Square**.
-3. Open a listing and choose **Download** to add its torrent to the queue.
-4. Press **R3** to open Downloads. Pause or resume jobs, choose a destination for new downloads, or use **Triangle** on a completed job to install a compatible PKG.
+Ao iniciar, o terminal mostra o endereço da sua rede local (ex.: `http://192.168.1.2:8765`).
+- **No PC/Celular**: abra o endereço no navegador para gerenciar categorias, links e capas.
+- **No PS4**: abra a loja, pressione **L3** (ou **OPTIONS** para sincronizar), informe o mesmo endereço e sincronize.
 
-## Keep downloads running in the background
+---
 
-The main app downloads while it is open. For transfers to continue after you close it:
+## Como compilar o `.pkg` no GitHub
 
-1. In NULL_store, open **Downloads**, press **L3**, and select **Start / Install service**.
-2. Confirm the service shows **Connected** in Downloads.
-3. Close NULL_store. The service can continue the transfer while the PS4 remains awake and HEN stays active.
+O workflow [.github/workflows/build-pkg.yml](.github/workflows/build-pkg.yml) compila automaticamente em `ubuntu-24.04`:
+1. Executa os testes unitários (`make test`, incluindo testes do painel web em Python e testes C++ com ASan/UBSan).
+2. Baixa o OpenOrbis PS4 Toolchain (`v0.5.4`), gera `eboot.bin` com permissões de instalador (`tools/installer-auth.hex`) e empacota `HomebrewStore-PS4-*.pkg`.
+3. Valida o `.pkg` gerado (`PkgTool.Core pkg_validate` + `tools/verify_package.py`) e publica em **Actions → Artifacts** (ou em **Releases** ao enviar uma tag `v*`).
 
-You can also use the [optional Background Service PKG](../../releases/latest/download/NULL_store-Background-Service-1.0.pkg) to install or start the same service. Open the separate setup app and press **X**, then return to NULL_store and check for **Connected**.
+Veja detalhes em [BUILDING.md](BUILDING.md) e [TESTING.md](TESTING.md).
 
-The service does not download in rest mode or start automatically after a reboot. Reopen NULL_store after restarting the console.
+## Licença
 
-## PS4 game catalogue and BitTorrent downloads
-
-NULL_store starts with a bundled catalogue and refreshes public listing pages in the background. Press **Options** to refresh. Starting a download fetches the torrent from its source and contacts BitTorrent trackers to find peers. Peer availability depends on the torrent and your network, so some transfers may start slowly or find no usable peers.
-
-Open **Downloads**, press **L3**, then choose **Test torrent connection (one piece only)** to test with the public-domain *Big Buck Bunny* torrent. It downloads one verified piece and stops at about 256 KB. [See the PS4 test guide.](TESTING.md)
-
-## Known limitations and test status
-
-- The same game or release may appear more than once because entries from different catalogue sources are kept separately.
-- Transfers can be slow or fail when trackers are unavailable or no compatible peers can be reached.
-- Package installation supports complete compatible `.pkg` files; it does not extract archives or join split packages.
-- The Background Service requires HEN to remain active and the console to stay awake. Rest mode and automatic startup are not supported.
-- PS4 may not report install percentages; check Notifications for the final system result.
-
-Console testing has been performed on PS4 system software **13.00** with HEN active. The exact HEN/GoldHEN build was not recorded, and other firmware/HEN combinations have not been verified. Catalogue browsing, foreground transfers, and in-app PKG installation have been tried on-console. The Background Service's close-app behavior still needs further testing across console setups.
-
-<details>
-<summary>See the Downloads and Background Service screens</summary>
-
-![Downloads queue with a sample transfer](screenshots/downloads.png)
-
-![Background Service options](screenshots/background-service.png)
-
-</details>
-
-## Frequently asked questions
-
-### Do I need to install the Background Service package separately?
-
-You don't need another package to use NULL_store. The main app contains a service that can keep downloads running after the store closes. To try setting it up, go to **Downloads → L3 → Start / Install service**.
-
-The separate Background Service PKG is optional. It provides another way to install or start the same service; you don't need it if setup works directly from NULL_store. Check that Downloads shows **Connected** and keep your PS4 awake with HEN active for background transfers.
-
-## Disclaimer
-
-NULL_store is a BitTorrent client for listings from third-party sites. This project publishes the app and its optional background service; it does not host, store, or distribute game files through this repository or a NULL_store server.
-
-The app saves downloads on your PS4 and may upload pieces of those files to other BitTorrent peers during a transfer. Check your local laws and only download or share content you have permission to use.
-
-## Source and building
-
-The source code and host tests are available in this repository. See [BUILDING.md](BUILDING.md) for build requirements, [ROADMAP.md](ROADMAP.md) for planned improvements, and [CONTRIBUTING.md](CONTRIBUTING.md) to get involved. NULL_store is released under [GPL-3.0](LICENSE). Third-party components retain their respective licenses.
-
-## Third-party software
-
-The optional Background Service includes the unmodified `jb.prx` compatibility module from Itemzflow, licensed under GPL-3.0. The [license](https://github.com/LightningMods/Itemzflow/blob/e71c284c61db3fce53936178db30dd38be7ba47b/LICENSE), [PRX source and build files](https://github.com/LightningMods/Itemzflow/tree/e71c284c61db3fce53936178db30dd38be7ba47b/external/Jailbreak%20PRX), and [upstream module](https://github.com/LightningMods/Itemzflow/blob/e71c284c61db3fce53936178db30dd38be7ba47b/App-Media-Assets/Media/jb.prx) are available from the Itemzflow repository at the revision used for this component.
-
-[Download checksums](SHA256SUMS.txt)
+Código-fonte da aplicação sob [GPL-3.0](LICENSE). Componentes e avisos de terceiros mantidos em `assets/`.

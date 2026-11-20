@@ -56,13 +56,12 @@ def icon(label: str, target: Path) -> None:
 
 def main() -> None:
     import os
-    targets = (BRAND / "store-icon.png", BRAND / "service-icon.png", ROOT / "sce_sys" / "icon0.png")
+    targets = (BRAND / "store-icon.png", ROOT / "sce_sys" / "icon0.png")
     if os.environ.get("NULLSTORE_KEEP_ICONS") == "1" and all(t.exists() for t in targets):
         print("NULLSTORE_KEEP_ICONS=1: keeping committed icons.")
         return
-    icon("Store", BRAND / "store-icon.png")
-    icon("Service", BRAND / "service-icon.png")
-    icon("Store", ROOT / "sce_sys" / "icon0.png")
+    icon("HB Store", BRAND / "store-icon.png")
+    icon("HB Store", ROOT / "sce_sys" / "icon0.png")
 
 
 if __name__ == "__main__":

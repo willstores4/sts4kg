@@ -1,7 +1,6 @@
 #include "network_ps4.h"
 #include "data_root.h"
 #include "catalog.h"
-#include "service_log.h"
 #include <pthread.h>
 #include <orbis/Http.h>
 #include <orbis/Ssl.h>
@@ -11,98 +10,321 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <cerrno>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include "../build/trusted_roots.h"
-extern "C" int recvTimeout(int,unsigned) __asm__("sceHttpSetRecvTimeOut");
+
+extern "C" int recvTimeout(int, unsigned) __asm__("sceHttpSetRecvTimeOut");
 extern "C" int sslTerminate(int) __asm__("sceSslTerm");
-extern "C" int autoRedirect(int,int) __asm__("sceHttpSetAutoRedirect");
-extern "C" int httpsError(int,int*,uint32_t*) __asm__("sceHttpsGetSslError");
-static int pool=-1,ssl=-1,http=-1,caLoadResult=-1;static pthread_mutex_t initMutex=PTHREAD_MUTEX_INITIALIZER;
-void portalNetworkTrace(const char*format,...){char message[768];va_list args;va_start(args,format);vsnprintf(message,sizeof message,format,args);va_end(args);
-#if defined(PORTAL_SERVICE_DAEMON) && !defined(PORTAL_HOST)
- SERVICE_LOG("network-fetch: %s",message);
-#elif !defined(PORTAL_HOST)
- char line[896];int n=snprintf(line,sizeof line,"[NETWORK 1.0][pid %d][%lld] %s\n",getpid(),(long long)time(0),message);if(n<=0)return;size_t size=(size_t)n<sizeof line?(size_t)n:sizeof line-1;const char*root=nullStoreDataRoot();char path[128];snprintf(path,sizeof path,"%s/network.log",root);int fd=open(path,O_WRONLY|O_CREAT|O_APPEND,0666);if(fd<0){snprintf(path,sizeof path,"/user%s/network.log",root);fd=open(path,O_WRONLY|O_CREAT|O_APPEND,0666);}if(fd>=0){size_t offset=0;while(offset<size){ssize_t wrote=write(fd,line+offset,size-offset);if(wrote<=0)break;offset+=(size_t)wrote;}close(fd);}
+extern "C" int autoRedirect(int, int) __asm__("sceHttpSetAutoRedirect");
+extern "C" int httpsError(int, int*, uint32_t*) __asm__("sceHttpsGetSslError");
+
+static int pool = -1, ssl = -1, http = -1, caLoadResult = -1;
+static pthread_mutex_t initMutex = PTHREAD_MUTEX_INITIALIZER;
+
+void portalNetworkTrace(const char* format, ...) {
+    char message[768];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof message, format, args);
+    va_end(args);
+#ifndef PORTAL_HOST
+    char line[896];
+    int n = snprintf(line, sizeof line, "[NETWORK 1.0][pid %d][%lld] %s\n", getpid(), (long long)time(0), message);
+    if (n <= 0) return;
+    size_t size = (size_t)n < sizeof line ? (size_t)n : sizeof line - 1;
+    const char* root = hbStoreDataRoot();
+    char path[128];
+    snprintf(path, sizeof path, "%s/network.log", root);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    if (fd < 0) {
+        snprintf(path, sizeof path, "/user%s/network.log", root);
+        fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+    }
+    if (fd >= 0) {
+        size_t offset = 0;
+        while (offset < size) {
+            ssize_t wrote = write(fd, line + offset, size - offset);
+            if (wrote <= 0) break;
+            offset += (size_t)wrote;
+        }
+        close(fd);
+    }
 #endif
 }
-bool portalNetworkInit(){
- int lock=pthread_mutex_lock(&initMutex);if(lock){portalNetworkTrace("initialization mutex failed=%d",lock);return false;}
- if(http>=0){pthread_mutex_unlock(&initMutex);return true;}
- uint32_t netModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
- uint32_t sslModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SSL);
- uint32_t httpModule=sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_HTTP);
- int netResult=sceNetInit(),ctlResult=sceNetCtlInit();
- portalNetworkTrace("init modules net=0x%08X ssl=0x%08X http=0x%08X; netInit=0x%08X ctlInit=0x%08X",netModule,sslModule,httpModule,(unsigned)netResult,(unsigned)ctlResult);
- errno=0;pool=sceNetPoolCreate("NULL_storeCatalog",1024*1024,0);int poolError=errno;
- if(pool>=0)ssl=sceSslInit(2*1024*1024);
- if(ssl>=0)http=sceHttpInit(pool,ssl,2*1024*1024);
- bool ok=false;
- if(http>=0){
-  // The elevated daemon does not inherit the title's default CA store.
-  // These embedded PEM records and pointer arrays outlive the HTTP context.
-  caLoadResult=sceHttpsLoadCert(http,(int32_t)portalTrustCount,portalTrustRoots,0,0);
-  portalNetworkTrace("HTTPS trust roots=%zu load=0x%08X sha256=%s",portalTrustCount,(unsigned)caLoadResult,portalTrustSHA256);
-  ok=caLoadResult>=0;
- }
- portalNetworkTrace("init complete=%d pool=%d pool_errno=%d ssl=%d http=%d",ok?1:0,pool,poolError,ssl,http);
- if(!ok){if(http>=0)sceHttpTerm(http);if(ssl>=0)sslTerminate(ssl);if(pool>=0)sceNetPoolDestroy(pool);http=ssl=pool=-1;}
- pthread_mutex_unlock(&initMutex);return ok;
+
+bool portalNetworkInit() {
+    int lock = pthread_mutex_lock(&initMutex);
+    if (lock) {
+        portalNetworkTrace("initialization mutex failed=%d", lock);
+        return false;
+    }
+    if (http >= 0) {
+        pthread_mutex_unlock(&initMutex);
+        return true;
+    }
+    uint32_t netModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_NET);
+    uint32_t sslModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SSL);
+    uint32_t httpModule = sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_HTTP);
+    int netResult = sceNetInit(), ctlResult = sceNetCtlInit();
+    portalNetworkTrace("init modules net=0x%08X ssl=0x%08X http=0x%08X; netInit=0x%08X ctlInit=0x%08X",
+                       netModule, sslModule, httpModule, (unsigned)netResult, (unsigned)ctlResult);
+    errno = 0;
+    pool = sceNetPoolCreate("HBStoreHTTP", 1024 * 1024, 0);
+    int poolError = errno;
+    if (pool >= 0) ssl = sceSslInit(2 * 1024 * 1024);
+    if (ssl >= 0) http = sceHttpInit(pool, ssl, 2 * 1024 * 1024);
+    bool ok = false;
+    if (http >= 0) {
+        caLoadResult = sceHttpsLoadCert(http, (int32_t)portalTrustCount, portalTrustRoots, 0, 0);
+        portalNetworkTrace("HTTPS trust roots=%zu load=0x%08X sha256=%s", portalTrustCount, (unsigned)caLoadResult, portalTrustSHA256);
+        ok = caLoadResult >= 0;
+    }
+    portalNetworkTrace("init complete=%d pool=%d pool_errno=%d ssl=%d http=%d", ok ? 1 : 0, pool, poolError, ssl, http);
+    if (!ok) {
+        if (http >= 0) sceHttpTerm(http);
+        if (ssl >= 0) sslTerminate(ssl);
+        if (pool >= 0) sceNetPoolDestroy(pool);
+        http = ssl = pool = -1;
+    }
+    pthread_mutex_unlock(&initMutex);
+    return ok;
 }
-static bool networkURL(const std::string&url){if(url.size()>2300||url.find_first_of(" \t\r\n")!=std::string::npos)return false;size_t p=url.compare(0,8,"https://")==0?8:url.compare(0,7,"http://")==0?7:0;if(!p)return false;auto end=url.find_first_of("/?#",p);auto host=url.substr(p,end-p);return !host.empty()&&host.find('@')==std::string::npos;}
-static std::string networkHost(const std::string&url){size_t p=url.compare(0,8,"https://")==0?8:url.compare(0,7,"http://")==0?7:0;if(!p)return "invalid";auto end=url.find_first_of("/?#",p);return url.substr(p,end-p);}
-static std::string redirectURL(const std::string&base,std::string path){while(!path.empty()&&(path.back()=='\r'||path.back()==' '))path.pop_back();if(path.compare(0,2,"//")==0)return base.substr(0,base.find(':'))+":"+path;if(path.find("://")!=std::string::npos)return path;auto scheme=base.find("://");auto end=base.find('/',scheme+3);auto origin=base.substr(0,end);if(!path.empty()&&path[0]=='/')return origin+path;return base.substr(0,base.find_last_of('/')+1)+path;}
-bool portalNetworkFetch(const std::string&initial,std::string&out,size_t cap,const std::string&referer){
- out.clear();
- if(!portalNetworkInit()){portalNetworkTrace("GET failed host=%s reason=network_init",networkHost(initial).c_str());return false;}
- std::string url=initial;
- for(int hop=0;hop<6;hop++){
-  if(!networkURL(url)){portalNetworkTrace("GET failed host=%s hop=%d reason=invalid_url",networkHost(url).c_str(),hop);return false;}
-  int t=sceHttpCreateTemplate(http,"NULL_store/1.0",ORBIS_HTTP_VERSION_1_1,1);
-  if(t<0){portalNetworkTrace("GET failed host=%s hop=%d reason=create_template result=%d",networkHost(url).c_str(),hop,t);return false;}
-  int co=-1,r=-1,code=0,sendResult=-1,readFailure=0;bool ok=false;std::string location,failure="create_connection";
-  autoRedirect(t,0);sceHttpSetResolveTimeOut(t,8000000);sceHttpSetConnectTimeOut(t,8000000);sceHttpSetSendTimeOut(t,8000000);recvTimeout(t,10000000);
-  // The native keepalive path retains the explicitly loaded trust context.
-  // Each request/hop still deletes its connection below.
-  co=sceHttpCreateConnectionWithURL(t,url.c_str(),1);
-  if(co>=0){
-   failure="create_request";
-   r=sceHttpCreateRequestWithURL(co,ORBIS_METHOD_GET,url.c_str(),0);
-   if(r>=0){
-    failure="send_request";
-    sceHttpAddRequestHeader(r,"Accept-Encoding","identity",0);
-    if(sourceURL(url)){std::string ref=sourceForURL(referer)==sourceForURL(url)?referer:sourceOrigin(sourceForURL(url))+"/";sceHttpAddRequestHeader(r,"Referer",ref.c_str(),0);}
-    sendResult=sceHttpSendRequest(r,0,0);
-    if(sendResult<0){
-     int nativeErrno=0,sslCode=0;uint32_t verify=0;int sslQuery=-1;
-     int errnoQuery=sceHttpGetLastErrno(r,&nativeErrno);
-     if(((uint32_t)sendResult&0xffff0000u)==0x80950000u)sslQuery=httpsError(r,&sslCode,&verify);
-     portalNetworkTrace("request failure host=%s send=0x%08X sslQuery=0x%08X ssl=0x%08X verify=0x%08X errnoQuery=0x%08X errno=%d roots=%zu caLoad=0x%08X keepalive=1",networkHost(url).c_str(),(unsigned)sendResult,(unsigned)sslQuery,(unsigned)sslCode,verify,(unsigned)errnoQuery,nativeErrno,portalTrustCount,(unsigned)caLoadResult);
+
+static std::string networkHost(const std::string& url) {
+    size_t p = url.compare(0, 8, "https://") == 0 ? 8 : url.compare(0, 7, "http://") == 0 ? 7 : 0;
+    if (!p) return "invalid";
+    auto end = url.find_first_of("/?#", p);
+    return url.substr(p, end - p);
+}
+
+static std::string redirectURL(const std::string& base, std::string path) {
+    while (!path.empty() && (path.back() == '\r' || path.back() == ' ')) path.pop_back();
+    if (path.compare(0, 2, "//") == 0) return base.substr(0, base.find(':')) + ":" + path;
+    if (path.find("://") != std::string::npos) return path;
+    auto scheme = base.find("://");
+    auto end = base.find('/', scheme + 3);
+    auto origin = base.substr(0, end);
+    if (!path.empty() && path[0] == '/') return origin + path;
+    return base.substr(0, base.find_last_of('/') + 1) + path;
+}
+
+static std::string findResponseHeader(const std::string& allHeaders, const std::string& headerName) {
+    std::string normalized = lower(allHeaders);
+    std::string needle = "\n" + lower(headerName) + ":";
+    size_t p = normalized.find(needle);
+    if (p == std::string::npos && normalized.compare(0, needle.size() - 1, needle.substr(1)) == 0) {
+        p = 0;
+    } else if (p != std::string::npos) {
+        ++p;
     }
-    if(sendResult>=0){
-     failure="get_status";
-     int statusResult=sceHttpGetStatusCode(r,&code);
-     if(statusResult>=0&&code==200){
-      failure="read_response";
-      char buffer[32768];
-      for(;;){int n=sceHttpReadData(r,buffer,sizeof buffer);if(n==0){ok=true;failure="";break;}if(n<0){readFailure=n;break;}if(out.size()+(size_t)n>cap){readFailure=-2;failure="response_too_large";break;}out.append(buffer,(size_t)n);}
-     }else if(statusResult>=0&&(code==301||code==302||code==303||code==307||code==308)){
-      failure="redirect_without_location";
-      char*headers=0;size_t size=0;
-      if(sceHttpGetAllResponseHeaders(r,&headers,&size)>=0&&headers){
-       std::string all(headers,size),normalized=lower(all);size_t p=normalized.find("\nlocation:");
-       if(p==std::string::npos&&normalized.compare(0,9,"location:")==0)p=0;else if(p!=std::string::npos)++p;
-       if(p!=std::string::npos){p+=9;while(p<all.size()&&(all[p]==' '||all[p]=='\t'))++p;location=all.substr(p,all.find('\n',p)-p);failure="redirect";}
-      }
-     }else if(statusResult>=0)failure="http_status";
+    if (p == std::string::npos) return "";
+    p += needle.size() - 1;
+    while (p < allHeaders.size() && (allHeaders[p] == ' ' || allHeaders[p] == '\t')) ++p;
+    size_t end = allHeaders.find_first_of("\r\n", p);
+    return allHeaders.substr(p, end - p);
+}
+
+static bool performGet(const std::string& initial, std::string* outMemory, size_t cap,
+                       const std::string& referer, const std::string& rangeHeader, bool capPartialOk,
+                       const std::string& destFile, uint64_t expectedBytes,
+                       PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
+                       std::string& errorOut) {
+    errorOut.clear();
+    if (outMemory) outMemory->clear();
+    if (!portalNetworkInit()) {
+        errorOut = "Falha ao inicializar rede PS4";
+        portalNetworkTrace("GET failed host=%s reason=network_init", networkHost(initial).c_str());
+        return false;
     }
-   }
-  }
-  if(r>=0)sceHttpDeleteRequest(r);if(co>=0)sceHttpDeleteConnection(co);sceHttpDeleteTemplate(t);
-  if(ok){portalNetworkTrace("GET ok host=%s hop=%d status=%d bytes=%zu",networkHost(url).c_str(),hop,code,out.size());return true;}
-  out.clear();if(!location.empty()){portalNetworkTrace("GET redirect host=%s hop=%d status=%d",networkHost(url).c_str(),hop,code);url=redirectURL(url,location);continue;}
-  portalNetworkTrace("GET failed host=%s hop=%d reason=%s status=%d send=%d read=%d",networkHost(url).c_str(),hop,failure.c_str(),code,sendResult,readFailure);return false;
- }
- portalNetworkTrace("GET failed host=%s reason=redirect_limit",networkHost(url).c_str());return false;
+    std::string url = initial;
+    for (int hop = 0; hop < 6; hop++) {
+        if (!isHttpUrl(url)) {
+            errorOut = "URL inválida";
+            portalNetworkTrace("GET failed host=%s hop=%d reason=invalid_url", networkHost(url).c_str(), hop);
+            return false;
+        }
+        int t = sceHttpCreateTemplate(http, "HBStore/1.0", ORBIS_HTTP_VERSION_1_1, 1);
+        if (t < 0) {
+            errorOut = "Erro interno HTTP (template)";
+            portalNetworkTrace("GET failed host=%s hop=%d reason=create_template result=%d", networkHost(url).c_str(), hop, t);
+            return false;
+        }
+        int co = -1, r = -1, code = 0, sendResult = -1, readFailure = 0;
+        bool ok = false;
+        std::string location, failure = "create_connection";
+        autoRedirect(t, 0);
+        sceHttpSetResolveTimeOut(t, 8000000);
+        sceHttpSetConnectTimeOut(t, 8000000);
+        sceHttpSetSendTimeOut(t, 8000000);
+        recvTimeout(t, 15000000);
+
+        co = sceHttpCreateConnectionWithURL(t, url.c_str(), 1);
+        if (co >= 0) {
+            failure = "create_request";
+            r = sceHttpCreateRequestWithURL(co, ORBIS_METHOD_GET, url.c_str(), 0);
+            if (r >= 0) {
+                failure = "send_request";
+                sceHttpAddRequestHeader(r, "Accept-Encoding", "identity", 0);
+                if (!referer.empty()) sceHttpAddRequestHeader(r, "Referer", referer.c_str(), 0);
+                if (!rangeHeader.empty()) sceHttpAddRequestHeader(r, "Range", rangeHeader.c_str(), 0);
+                sendResult = sceHttpSendRequest(r, 0, 0);
+                if (sendResult < 0) {
+                    int nativeErrno = 0, sslCode = 0;
+                    uint32_t verify = 0;
+                    int sslQuery = -1;
+                    int errnoQuery = sceHttpGetLastErrno(r, &nativeErrno);
+                    if (((uint32_t)sendResult & 0xffff0000u) == 0x80950000u) {
+                        sslQuery = httpsError(r, &sslCode, &verify);
+                    }
+                    portalNetworkTrace("request failure host=%s send=0x%08X sslQuery=0x%08X ssl=0x%08X verify=0x%08X errnoQuery=0x%08X errno=%d",
+                                       networkHost(url).c_str(), (unsigned)sendResult, (unsigned)sslQuery, (unsigned)sslCode, verify, (unsigned)errnoQuery, nativeErrno);
+                    errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+                } else {
+                    failure = "get_status";
+                    int statusResult = sceHttpGetStatusCode(r, &code);
+                    char* headers = 0;
+                    size_t headerSize = 0;
+                    std::string allHeaders;
+                    if (sceHttpGetAllResponseHeaders(r, &headers, &headerSize) >= 0 && headers && headerSize > 0) {
+                        allHeaders.assign(headers, headerSize);
+                    }
+                    if (statusResult >= 0 && (code == 200 || (code == 206 && !rangeHeader.empty()))) {
+                        failure = "read_response";
+                        uint64_t totalLen = expectedBytes;
+                        std::string cl = findResponseHeader(allHeaders, "Content-Length");
+                        if (!cl.empty()) totalLen = strtoull(cl.c_str(), nullptr, 10);
+
+                        int fd = -1;
+                        std::string tmpPath;
+                        if (!destFile.empty()) {
+                            tmpPath = destFile + ".part";
+                            fd = open(tmpPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                            if (fd < 0) {
+                                failure = "open_dest";
+                                errorOut = "Erro ao criar arquivo de destino";
+                            }
+                        }
+
+                        if (destFile.empty() || fd >= 0) {
+                            char buffer[65536];
+                            uint64_t received = 0;
+                            for (;;) {
+                                if (stopCb && stopCb(user)) {
+                                    failure = "cancelled";
+                                    errorOut = "Download cancelado";
+                                    break;
+                                }
+                                int n = sceHttpReadData(r, buffer, sizeof buffer);
+                                if (n == 0) {
+                                    ok = true;
+                                    failure = "";
+                                    break;
+                                }
+                                if (n < 0) {
+                                    readFailure = n;
+                                    errorOut = "Conexão interrompida durante download";
+                                    break;
+                                }
+                                if (outMemory) {
+                                    size_t take = (size_t)n;
+                                    if (outMemory->size() + take > cap) {
+                                        if (capPartialOk) {
+                                            take = cap - outMemory->size();
+                                            outMemory->append(buffer, take);
+                                            ok = true;
+                                            failure = "";
+                                            break;
+                                        }
+                                        readFailure = -2;
+                                        failure = "response_too_large";
+                                        errorOut = "Resposta excedeu o limite de memória";
+                                        break;
+                                    }
+                                    outMemory->append(buffer, take);
+                                }
+                                if (fd >= 0) {
+                                    size_t off = 0;
+                                    bool writeErr = false;
+                                    while (off < (size_t)n) {
+                                        ssize_t w = write(fd, buffer + off, (size_t)n - off);
+                                        if (w < 0 && errno == EINTR) continue;
+                                        if (w <= 0) { writeErr = true; break; }
+                                        off += (size_t)w;
+                                    }
+                                    if (writeErr) {
+                                        failure = "disk_write";
+                                        errorOut = "Erro ao gravar PKG no armazenamento";
+                                        break;
+                                    }
+                                }
+                                received += (uint64_t)n;
+                                if (progressCb) progressCb(user, received, totalLen);
+                            }
+                            if (fd >= 0) {
+                                fsync(fd);
+                                close(fd);
+                                if (ok) {
+                                    if (rename(tmpPath.c_str(), destFile.c_str()) != 0) {
+                                        ok = false;
+                                        errorOut = "Erro ao finalizar arquivo PKG";
+                                        unlink(tmpPath.c_str());
+                                    }
+                                } else {
+                                    unlink(tmpPath.c_str());
+                                }
+                            }
+                        }
+                    } else if (statusResult >= 0 && (code == 301 || code == 302 || code == 303 || code == 307 || code == 308)) {
+                        failure = "redirect_without_location";
+                        location = findResponseHeader(allHeaders, "location");
+                        if (!location.empty()) failure = "redirect";
+                    } else if (statusResult >= 0) {
+                        failure = "http_status";
+                        errorOut = "Servidor respondeu HTTP " + std::to_string(code);
+                    }
+                }
+            }
+        }
+        if (r >= 0) sceHttpDeleteRequest(r);
+        if (co >= 0) sceHttpDeleteConnection(co);
+        sceHttpDeleteTemplate(t);
+
+        if (ok) {
+            portalNetworkTrace("GET ok host=%s hop=%d status=%d", networkHost(url).c_str(), hop, code);
+            return true;
+        }
+        if (outMemory) outMemory->clear();
+        if (!location.empty()) {
+            portalNetworkTrace("GET redirect host=%s hop=%d status=%d", networkHost(url).c_str(), hop, code);
+            url = redirectURL(url, location);
+            continue;
+        }
+        portalNetworkTrace("GET failed host=%s hop=%d reason=%s status=%d send=%d read=%d",
+                           networkHost(url).c_str(), hop, failure.c_str(), code, sendResult, readFailure);
+        if (errorOut.empty()) errorOut = "Falha de rede (" + failure + ")";
+        return false;
+    }
+    errorOut = "Limite de redirecionamentos excedido";
+    portalNetworkTrace("GET failed host=%s reason=redirect_limit", networkHost(url).c_str());
+    return false;
+}
+
+bool portalNetworkFetch(const std::string& initial, std::string& out, size_t cap, const std::string& referer) {
+    std::string err;
+    return performGet(initial, &out, cap, referer, "", false, "", 0, nullptr, nullptr, nullptr, err);
+}
+
+bool portalNetworkFetchRange(const std::string& url, std::string& out, uint64_t offset, size_t length, std::string& error) {
+    std::string range = "bytes=" + std::to_string(offset) + "-" + std::to_string(offset + length - 1);
+    return performGet(url, &out, length, "", range, true, "", 0, nullptr, nullptr, nullptr, error);
+}
+
+bool portalNetworkDownloadFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
+                               PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
+                               std::string& error) {
+    return performGet(url, nullptr, 0, "", "", false, destPath, expectedBytes, progressCb, stopCb, user, error);
 }

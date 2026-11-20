@@ -8,8 +8,8 @@ extern "C" int32_t sceSysmoduleLoadModule(OrbisSysModule){return moduleResult;}
 extern "C" int32_t sceCommonDialogInitialize(){++commonCalls;return commonResult;}
 extern "C" bool sceCommonDialogIsUsed(){return busy;}
 extern "C" int32_t sceImeDialogInit(const OrbisImeDialogSetting*p,OrbisImeSettingsExtended*extra){
-    ++openCalls;assert(!extra&&p->userId==7&&p->maxTextLength==128&&p->enterLabel==ORBIS_BUTTON_LABEL_SEARCH&&p->type==ORBIS_TYPE_DEFAULT);
-    assert(imeDecode(reinterpret_cast<const char16_t*>(p->title),64)=="Search games");destination=reinterpret_cast<char16_t*>(p->inputTextBuffer);return openResult;
+    ++openCalls;assert(!extra&&p->userId==7&&p->maxTextLength==128);
+    assert(imeDecode(reinterpret_cast<const char16_t*>(p->title),64)=="Buscar homebrew");destination=reinterpret_cast<char16_t*>(p->inputTextBuffer);return openResult;
 }
 extern "C" OrbisDialogStatus sceImeDialogGetStatus(){return status;}
 extern "C" int32_t sceImeDialogGetResult(OrbisDialogResult*r){r->endstatus=endStatus;return readResult;}

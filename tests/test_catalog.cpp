@@ -1,6 +1,133 @@
 #include "../src/ui.h"
 #include <cassert>
 #include <iostream>
-int main(){auto a=parseCards(readFile("tests/fixtures/page1.html"));auto b=parseCards(readFile("tests/fixtures/page2.html"));assert(a.size()>=12&&b.size()==12);assert(lastPage(readFile("tests/fixtures/page2.html"))==63);assert(sourceURL(a[0].url));assert(!sourceURL("https://ps4torrent.net.evil/a"));assert(!sourceURL("https://ps4torrent.net@evil/a"));assert(a[0].id>0);assert(decode("A &amp; B &#x41; &#1040;")=="A & B A А");assert(attr("<a data-href='bad' href='good'>","href")=="good");auto games=loadCatalog(readFile("assets/catalog.tsv"));assert(games.size()>700);auto round=loadCatalog(serialize(games));assert(round.size()==games.size());for(size_t i=0;i<games.size();++i)assert(games[i].title==round[i].title);for(auto&g:b){bool found=false;for(auto&x:games)if(g.id==x.id){assert(g.title==x.title);assert(g.year==x.year);assert(g.size==x.size);found=true;}assert(found);}assert(sizeMB("2,5 GB")==2560);assert(sizeMB("500 MB")==500);assert(loadCatalog("garbage\n").empty());
-    auto packed=packedBitmap("assets",games[0].id);auto loose=loadBitmap("assets/covers/"+std::to_string(games[0].id)+".jpg");assert(!packed.p.empty()&&packed.p==loose.p);UI ui("assets","build/test-data");assert(ui.visible.size()==games.size());ui.action(SELECT_SOURCE);assert(ui.sourceFilterPicker);ui.sourceChoice=2;ui.action(CONFIRM);assert(ui.sourceFilter==2&&!ui.visible.empty());for(int n:ui.visible)assert(sourceForURL(ui.games[n].url)==2);ui.action(SELECT_SOURCE);ui.sourceChoice=0;ui.action(CONFIRM);assert(ui.visible.size()==games.size());ui.action(PAGE_NEXT);assert(ui.selected==12);ui.action(PAGE_PREV);assert(ui.selected==0);ui.action(SEARCH);assert(ui.keyboard);ui.key=0;ui.action(CONFIRM);assert(ui.query=="A");ui.key=39;ui.action(CONFIRM);assert(!ui.keyboard);ui.action(BACK);assert(ui.query.empty());ui.action(CONFIRM);assert(ui.detail);ui.action(CONFIRM);assert(ui.sourcePicker&&ui.downloadRequest&&ui.downloadGame.id==ui.current()->id);ui.action(BACK);assert(!ui.sourcePicker&&ui.detail);ui.action(BACK);assert(!ui.detail);ui.action(DOWNLOADS);assert(ui.tab==3);ui.action(SERVICE);assert(ui.servicePicker);ui.action(CONFIRM);assert(ui.serviceStartRequest&&!ui.servicePicker);ui.action(SERVICE);ui.action(DOWN);ui.action(CONFIRM);assert(ui.serviceStopRequest&&!ui.servicePicker);ui.action(SEARCH);assert(!ui.installPicker);DownloadRow completed;completed.id=1;completed.state=DownloadState::Complete;ui.jobs.push_back(completed);ui.action(SEARCH);assert(ui.installPicker&&ui.installScanRequest&&ui.installJob==1);InstallPackage package;package.path="/generated/base.pkg";ui.packages.push_back(package);ui.installLoading=false;ui.action(CONFIRM);assert(ui.installSubmitRequest);ui.action(BACK);assert(!ui.installPicker);ui.action(BACK);assert(ui.tab==0);ui.action(TAB_NEXT);assert(ui.tab==1&&ui.visible.empty());ui.action(TAB_PREV);assert(ui.tab==0);ui.action(SORT);assert(ui.sort==1);ui.tab=3;ui.action(REMOVE_DOWNLOAD);assert(ui.removePicker&&ui.removeChoice==2);ui.action(UP);ui.action(CONFIRM);assert(ui.removeRequest&&ui.removeDeleteFiles&&ui.removeJob==1);ui.tab=0;ui.draw();assert(ui.c.pixels.size()==1920*1080);std::cout<<"Catalog parser, round trip, source restriction, search, navigation, sorting and rendering passed ("<<games.size()<<" games).\n";
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main() {
+    mkdir("build/test-data", 0755);
+    assert(normalizeServerUrl("192.168.1.2:8765/") == "http://192.168.1.2:8765");
+    assert(normalizeServerUrl("https://hb.example.org/") == "https://hb.example.org");
+    assert(normalizeServerUrl("ftp://invalid") == "");
+    assert(resolveServerUrl("http://192.168.1.2:8765", "/covers/1.jpg") == "http://192.168.1.2:8765/covers/1.jpg");
+    assert(resolveServerUrl("http://192.168.1.2:8765", "https://cdn.example.org/a.pkg") == "https://cdn.example.org/a.pkg");
+
+    std::string json = R"({
+        "store_name": "HB_Store",
+        "store_subtitle": "Catálogo Homebrew",
+        "updated_at": 1763601900,
+        "categories": [
+            {"id": 1, "name": "Aplicativos", "slug": "apps"},
+            {"id": 2, "name": "Emuladores", "slug": "emulators"}
+        ],
+        "items": [
+            {
+                "id": 10,
+                "title": "Apollo Save Tool",
+                "category": "Aplicativos",
+                "category_id": 1,
+                "version": "2.1.0",
+                "author": "bucanero",
+                "description": "Ferramenta \u00e9 open-source",
+                "size": "18.4 MB",
+                "size_bytes": 19293798,
+                "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04",
+                "content_type": 26,
+                "content_flags": 0,
+                "pkg_url": "/pkgs/apollo.pkg",
+                "cover_url": "/covers/10.jpg",
+                "updated_at": 1763601900
+            },
+            {
+                "id": 11,
+                "title": "RetroArch PS4",
+                "category": "Emuladores",
+                "category_id": 2,
+                "version": "1.19",
+                "author": "libretro",
+                "description": "Emulador multi-sistema",
+                "size": "120.0 MB",
+                "size_bytes": 125829120,
+                "content_id": "IV0000-RARCH0001_00-RETROARCHPS40000",
+                "pkg_url": "http://192.168.1.2:8765/pkgs/retro.pkg",
+                "cover_url": ""
+            }
+        ]
+    })";
+
+    CatalogData cat;
+    std::string err;
+    assert(parseCatalogJson(json, "http://192.168.1.2:8765", cat, err));
+    assert(cat.storeName == "HB_Store");
+    assert(cat.categories.size() == 2);
+    assert(cat.items.size() == 2);
+    assert(cat.items[0].url == "http://192.168.1.2:8765/pkgs/apollo.pkg");
+    assert(cat.items[0].image == "http://192.168.1.2:8765/covers/10.jpg");
+    assert(cat.items[0].description == "Ferramenta é open-source");
+
+    auto round = loadCatalog(serialize(cat.items));
+    assert(round.size() == 2 && round[0].title == "Apollo Save Tool" && round[1].category == "Emuladores");
+
+    auto catsRound = loadCategories(serializeCategories(cat.categories));
+    assert(catsRound.size() == 2 && catsRound[1].name == "Emuladores");
+
+    UI ui("assets", "build/test-data");
+    ui.categories = cat.categories;
+    ui.games = cat.items;
+    ui.filter();
+    assert(ui.visible.size() == 2);
+
+    // Filtrar por categoria 2 (Emuladores -> tab index 3)
+    ui.action(TAB_NEXT); // Favoritos
+    assert(ui.tab == 1 && ui.visible.empty());
+    ui.action(TAB_NEXT); // Aplicativos
+    assert(ui.tab == 2 && ui.visible.size() == 1 && ui.visible[0] == 0);
+    ui.action(TAB_NEXT); // Emuladores
+    assert(ui.tab == 3 && ui.visible.size() == 1 && ui.games[ui.visible[0]].title == "RetroArch PS4");
+    ui.action(TAB_PREV);
+    ui.action(TAB_PREV);
+    ui.action(TAB_PREV);
+    assert(ui.tab == 0 && ui.visible.size() == 2);
+
+    // Favoritar e buscar
+    ui.action(FAVORITE);
+    assert(ui.favorites.size() == 1);
+    ui.action(SEARCH);
+    assert(ui.keyboard);
+    ui.key = 17; // 'r'
+    ui.action(CONFIRM);
+    ui.key = 44; // OK
+    ui.action(CONFIRM);
+    assert(!ui.keyboard && ui.query == "r");
+    ui.action(BACK);
+    assert(ui.query.empty());
+
+    // Detalhes -> Instalar em Background (Notificações) e Local
+    ui.action(CONFIRM);
+    assert(ui.detail);
+    ui.action(CONFIRM);
+    assert(ui.installBgRequest && ui.installItem.id == ui.current()->id);
+    ui.installBgRequest = false;
+    ui.action(LOCAL_INSTALL);
+    assert(ui.installLocalRequest);
+    ui.action(BACK);
+    assert(!ui.detail);
+
+    // Servidor config
+    ui.action(SERVER_CONFIG);
+    assert(ui.serverPicker);
+    ui.action(DOWN);
+    ui.action(CONFIRM);
+    assert(ui.serverSyncRequest && !ui.serverPicker);
+
+    // Aba Notificações
+    ui.action(DOWNLOADS);
+    assert(ui.tab == ui.downloadsTab());
+    ui.draw();
+    assert(ui.c.pixels.size() == 1920 * 1080);
+
+    unlink("build/test-data/favorites.txt");
+    rmdir("build/test-data");
+    std::cout << "Catalog JSON parser, round-trip, categories, search, install actions and UI rendering passed.\n";
+    return 0;
 }
