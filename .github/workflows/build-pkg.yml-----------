@@ -1,4 +1,4 @@
-name: Build PS4 Homebrew Store PKG
+name: Build PS4 WILLGAME Store PKG
 
 on:
   push:
@@ -78,7 +78,7 @@ jobs:
         run: |
           make LLVM="$LLVM_BIN" HOST_CXX="$LLVM_BIN/clang++" HOST_CC="$LLVM_BIN/clang" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" test
 
-      - name: Build Homebrew Store PKG
+      - name: Build WILLGAME Store PKG
         run: |
           make LLVM="$LLVM_BIN" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN"
 
@@ -91,7 +91,7 @@ jobs:
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="dev-${GITHUB_SHA::7}"; fi
           mkdir -p dist
-          cp build/IV0000-WGST00001_00-WGSTORE000000000.pkg "dist/HomebrewStore-PS4-${VER}.pkg"
+          cp build/IV0000-WGST00001_00-HBSTORE000000000.pkg "dist/HomebrewStore-PS4-${VER}.pkg"
           (cd dist && sha256sum *.pkg | tee SHA256SUMS.txt)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
