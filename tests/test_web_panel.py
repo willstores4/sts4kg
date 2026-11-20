@@ -310,6 +310,144 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(whole, bytes(full_pkg))
 
+    def test_multi_links_options_and_manual_split_links(self):
+        # Servidor auxiliar com Base PKG, Update PKG e 2 partes divididas sem manifesto JSON
+        base_pkg = make_fake_pkg(content_id="IV0000-HBST00010_00-BASEPACKAGE00001", total_size=4096)
+        upd_pkg = make_fake_pkg(content_id="IV0000-HBST00010_00-UPDATEPACK000002", total_size=4096)
+        full_split = bytearray(make_fake_pkg(content_id="IV0000-HBST00011_00-MANUALSPLIT00001", total_size=8192))
+        for i in range(0x1000, 8192):
+            full_split[i] = (i * 3) % 251
+        sp0 = bytes(full_split[:4096])
+        sp1 = bytes(full_split[4096:])
+
+        class UpstreamHandler(http.server.BaseHTTPRequestHandler):
+            blobs = {"/base.pkg": base_pkg, "/upd.pkg": upd_pkg, "/sp_0.pkg": sp0, "/sp_1.pkg": sp1}
+
+            def _serve(self, send_body: bool):
+                blob = self.blobs.get(self.path)
+                if blob is None:
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                rng = self.headers.get("Range")
+                if rng and rng.startswith("bytes="):
+                    s, _, e = rng[6:].partition("-")
+                    start = int(s) if s else 0
+                    end = int(e) if e else len(blob) - 1
+                    chunk = blob[start : end + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(chunk)))
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{len(blob)}")
+                    self.end_headers()
+                    if send_body:
+                        self.wfile.write(chunk)
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Content-Length", str(len(blob)))
+                    self.end_headers()
+                    if send_body:
+                        self.wfile.write(blob)
+
+            def do_HEAD(self):
+                self._serve(False)
+
+            def do_GET(self):
+                self._serve(True)
+
+            def log_message(self, *args):
+                pass
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        up = f"http://127.0.0.1:{srv.server_port}"
+
+        # 1. Cadastrar conteúdo com 2 opções (Base + Update com proxy no link extra)
+        status, _, data = self.request("POST", "/api/admin/homebrews", {
+            "title": "App Com Update",
+            "primary_label": "Base v1.0",
+            "pkg_url": f"{up}/base.pkg",
+            "link_mode": "options",
+            "extra_links": [{
+                "label": "Update v1.1",
+                "url": f"{up}/upd.pkg",
+                "content_id": "IV0000-HBST00010_00-UPDATEPACK000002",
+                "size_bytes": 4096,
+                "content_type": 27,
+                "proxy_pkg": True,
+            }],
+        })
+        self.assertEqual(status, 201)
+        item_opt = json.loads(data)["item"]
+        self.assertEqual(len(item_opt["extra_links"]), 1)
+
+        status, _, cat_raw = self.request("GET", "/api/catalog.json")
+        self.assertEqual(status, 200)
+        cat = json.loads(cat_raw)
+        opt_exported = cat["items"][0]
+        self.assertEqual(len(opt_exported["links"]), 2)
+        self.assertEqual(opt_exported["links"][0]["label"], "Base v1.0")
+        self.assertEqual(opt_exported["links"][1]["label"], "Update v1.1")
+        link1_path = urllib.parse.urlparse(opt_exported["links"][1]["url"])
+        status, _, upd_bytes = self.request("GET", f"{link1_path.path}?{link1_path.query}")
+        self.assertEqual(status, 200)
+        self.assertEqual(upd_bytes, upd_pkg)
+
+        # 2. Detectar sp_1.pkg como parte dividida (sem header \x7fCNT) e cadastrar modo split
+        status, _, insp_raw = self.request(
+            "POST", "/api/admin/inspect-pkg", {"pkg_url": f"{up}/sp_1.pkg", "allow_split_part": True}
+        )
+        self.assertEqual(status, 200)
+        insp = json.loads(insp_raw)
+        self.assertTrue(insp["is_split_part"])
+        self.assertEqual(insp["size_bytes"], 4096)
+
+        status, _, sp_raw = self.request("POST", "/api/admin/homebrews", {
+            "title": "App Split Manual",
+            "primary_label": "Parte 1",
+            "pkg_url": f"{up}/sp_0.pkg",
+            "link_mode": "split",
+            "extra_links": [{
+                "label": "Parte 2",
+                "url": f"{up}/sp_1.pkg",
+                "http_size_bytes": 4096,
+                "size_bytes": 4096,
+            }],
+        })
+        self.assertEqual(status, 201)
+        sp_item = json.loads(sp_raw)["item"]
+        self.assertEqual(sp_item["proxy_pkg"], 1)
+
+        # Verificar Range cruzando fronteira sp_0 -> sp_1 e download completo
+        status, _, whole_sp = self.request("GET", f"/api/pkg/{sp_item['id']}.pkg")
+        self.assertEqual(status, 200)
+        self.assertEqual(whole_sp, bytes(full_split))
+
+        status, hdrs, cross_sp = self.request(
+            "GET", f"/api/pkg/{sp_item['id']}.pkg", headers={"Range": "bytes=4000-4200"}
+        )
+        self.assertEqual(status, 206)
+        self.assertEqual(hdrs.get("Content-Range"), "bytes 4000-4200/8192")
+        self.assertEqual(cross_sp, bytes(full_split[4000:4201]))
+
+        # 3. Round-trip import-json preservando "links"
+        exported_json = json.dumps(cat).encode("utf-8")
+        status, _, imp_raw = self.request(
+            "POST", "/api/admin/import-json", body=exported_json, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(imp_raw)["imported"], 1)
+
+        status, _, state_raw = self.request("GET", "/api/admin/state")
+        self.assertEqual(status, 200)
+        imported_matches = [it for it in json.loads(state_raw)["items"] if it["title"] == "App Com Update"]
+        self.assertEqual(len(imported_matches), 2)
+        self.assertEqual(len(imported_matches[0]["extra_links"]), 1)
+        self.assertEqual(imported_matches[0]["extra_links"][0]["label"], "Update v1.1")
+
 
 if __name__ == "__main__":
     unittest.main()

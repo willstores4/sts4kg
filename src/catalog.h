@@ -16,6 +16,16 @@ struct Category {
     std::string slug;
 };
 
+struct GameLink {
+    std::string label;
+    std::string url;
+    std::string size;
+    uint64_t sizeBytes = 0;
+    std::string contentId;
+    uint32_t contentType = 0x1a;
+    uint32_t contentFlags = 0;
+};
+
 struct Game {
     int id = 0;
     std::string title;
@@ -32,7 +42,53 @@ struct Game {
     std::string url;   // PKG URL
     std::string image; // Cover URL
     long long updatedAt = 0;
+    std::vector<GameLink> links;
+    std::vector<std::string> splitUrls;
 };
+
+inline std::string jsonEscape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) continue;
+        else out += (char)c;
+    }
+    return out;
+}
+
+inline Game gameForLink(const Game& g, int idx) {
+    if (g.links.empty() || idx < 0 || idx >= int(g.links.size())) return g;
+    const auto& lnk = g.links[idx];
+    Game out = g;
+    out.url = lnk.url;
+    if (g.links.size() > 1 && !lnk.label.empty()) {
+        out.title = g.title + " [" + lnk.label + "]";
+    }
+    if (!lnk.contentId.empty()) {
+        out.contentId = lnk.contentId;
+        out.contentType = lnk.contentType ? lnk.contentType : 0x1a;
+        out.contentFlags = lnk.contentFlags;
+        out.sizeBytes = lnk.sizeBytes;
+        out.size = lnk.size;
+    } else if (lnk.url != g.url) {
+        out.contentId.clear();
+        out.contentType = lnk.contentType ? lnk.contentType : 0x1a;
+        out.contentFlags = lnk.contentFlags;
+        out.sizeBytes = lnk.sizeBytes;
+        out.size = lnk.size;
+    } else {
+        if (!lnk.size.empty()) out.size = lnk.size;
+        if (lnk.sizeBytes > 0) out.sizeBytes = lnk.sizeBytes;
+    }
+    out.links.clear();
+    if (idx != 0) out.splitUrls.clear();
+    return out;
+}
 
 struct CatalogData {
     std::string storeName = "WILLGAME Store";
@@ -567,6 +623,70 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
     return extractPkgManifestFromJson(jsonText, baseUrl, outPkgUrl, pieces, outContentId, outSizeBytes, error);
 }
 
+inline std::vector<GameLink> parseLinksJsonArray(const MiniJson::Value& arr, const std::string& serverBase) {
+    std::vector<GameLink> out;
+    if (arr.type != MiniJson::Value::Array) return out;
+    for (const auto& lv : arr.arrVal) {
+        if (lv.type != MiniJson::Value::Object) continue;
+        std::string rawU = firstJsonString(lv, {"url", "pkg_url", "pkgUrl", "pkg", "download_url"});
+        std::string resolvedU = resolveServerUrl(serverBase, rawU);
+        if (!isHttpUrl(resolvedU)) continue;
+        GameLink lk;
+        lk.label = firstJsonString(lv, {"label", "name", "title"});
+        lk.url = resolvedU;
+        if (auto* v = lv.get("size_bytes")) lk.sizeBytes = v->asUInt();
+        lk.size = firstJsonString(lv, {"size", "size_text"});
+        if (lk.size.empty() && lk.sizeBytes > 0) lk.size = bytesText(lk.sizeBytes);
+        lk.contentId = firstJsonString(lv, {"content_id", "contentId"});
+        if (auto* v = lv.get("content_type")) lk.contentType = (uint32_t)v->asUInt(0x1a);
+        if (auto* v = lv.get("content_flags")) lk.contentFlags = (uint32_t)v->asUInt(0);
+        out.push_back(std::move(lk));
+    }
+    return out;
+}
+
+inline std::vector<std::string> parseSplitUrlsArray(const MiniJson::Value& arr, const std::string& serverBase) {
+    std::vector<std::string> out;
+    if (arr.type != MiniJson::Value::Array) return out;
+    for (const auto& sv : arr.arrVal) {
+        std::string rawU = sv.type == MiniJson::Value::Object
+            ? firstJsonString(sv, {"url", "pkg_url", "pkgUrl", "download_url"})
+            : sv.asString();
+        std::string u = resolveServerUrl(serverBase, rawU);
+        if (isHttpUrl(u)) out.push_back(std::move(u));
+    }
+    return out;
+}
+
+inline std::string serializeLinksJson(const std::vector<GameLink>& links) {
+    if (links.empty()) return "";
+    std::string out = "[";
+    for (size_t i = 0; i < links.size(); ++i) {
+        if (i) out += ",";
+        const auto& l = links[i];
+        out += "{\"label\":\"" + jsonEscape(l.label) + "\","
+               "\"url\":\"" + jsonEscape(l.url) + "\","
+               "\"size\":\"" + jsonEscape(l.size) + "\","
+               "\"size_bytes\":" + std::to_string((unsigned long long)l.sizeBytes) + ","
+               "\"content_id\":\"" + jsonEscape(l.contentId) + "\","
+               "\"content_type\":" + std::to_string(l.contentType) + ","
+               "\"content_flags\":" + std::to_string(l.contentFlags) + "}";
+    }
+    out += "]";
+    return out;
+}
+
+inline std::string serializeStringArrayJson(const std::vector<std::string>& vals) {
+    if (vals.empty()) return "";
+    std::string out = "[";
+    for (size_t i = 0; i < vals.size(); ++i) {
+        if (i) out += ",";
+        out += "\"" + jsonEscape(vals[i]) + "\"";
+    }
+    out += "]";
+    return out;
+}
+
 inline bool parseCatalogJson(const std::string& jsonText, const std::string& serverBase,
                              CatalogData& out, std::string& error) {
     MiniJson::Value root;
@@ -642,6 +762,52 @@ inline bool parseCatalogJson(const std::string& jsonText, const std::string& ser
         g.image = resolveServerUrl(serverBase, firstJsonString(it, {"cover_url", "coverUrl", "cover", "image", "image_url", "icon"}));
         if (auto* v = it.get("updated_at")) g.updatedAt = v->asInt();
 
+        if (auto* lv = it.get("links")) {
+            g.links = parseLinksJsonArray(*lv, serverBase);
+        } else {
+            const MiniJson::Value* extraArr = it.get("extra_links");
+            if (!extraArr) extraArr = it.get("mirrors");
+            if (extraArr && extraArr->type == MiniJson::Value::Array && !extraArr->arrVal.empty() && isHttpUrl(g.url)) {
+                GameLink primary;
+                primary.label = firstJsonString(it, {"primary_label", "primaryLabel"});
+                if (primary.label.empty()) primary.label = "Principal";
+                primary.url = g.url;
+                primary.size = g.size;
+                primary.sizeBytes = g.sizeBytes;
+                primary.contentId = g.contentId;
+                primary.contentType = g.contentType;
+                primary.contentFlags = g.contentFlags;
+                g.links.push_back(std::move(primary));
+                for (size_t ei = 0; ei < extraArr->arrVal.size(); ++ei) {
+                    const auto& ev = extraArr->arrVal[ei];
+                    GameLink lk;
+                    if (ev.type == MiniJson::Value::Object) {
+                        lk.label = firstJsonString(ev, {"label", "name", "title"});
+                        lk.url = resolveServerUrl(serverBase, firstJsonString(ev, {"url", "pkg_url", "pkgUrl", "pkg", "download_url"}));
+                        if (auto* v = ev.get("size_bytes")) lk.sizeBytes = v->asUInt();
+                        lk.size = firstJsonString(ev, {"size", "size_text"});
+                        if (lk.size.empty() && lk.sizeBytes > 0) lk.size = bytesText(lk.sizeBytes);
+                        lk.contentId = firstJsonString(ev, {"content_id", "contentId"});
+                        if (auto* v = ev.get("content_type")) lk.contentType = (uint32_t)v->asUInt(0x1a);
+                        if (auto* v = ev.get("content_flags")) lk.contentFlags = (uint32_t)v->asUInt(0);
+                    } else {
+                        lk.url = resolveServerUrl(serverBase, ev.asString());
+                    }
+                    if (lk.label.empty()) lk.label = "Link " + std::to_string(ei + 2);
+                    if (isHttpUrl(lk.url)) g.links.push_back(std::move(lk));
+                }
+                if (g.links.size() <= 1) g.links.clear();
+            }
+        }
+        if (g.url.empty() && !g.links.empty()) g.url = g.links[0].url;
+
+        if (auto* sv = it.get("split_urls")) {
+            g.splitUrls = parseSplitUrlsArray(*sv, serverBase);
+        } else if (auto* pv = it.get("pieces")) {
+            g.splitUrls = parseSplitUrlsArray(*pv, serverBase);
+        }
+        if (g.url.empty() && !g.splitUrls.empty()) g.url = g.splitUrls[0];
+
         if (g.category.empty()) g.category = "Geral";
         if (g.id > 0 && !g.title.empty() && isHttpUrl(g.url)) {
             out.items.push_back(std::move(g));
@@ -709,6 +875,8 @@ inline std::string serialize(const std::vector<Game>& v) {
         s += "\t" + cleanField(g.url);
         s += "\t" + cleanField(g.image);
         s += "\t" + std::to_string(g.updatedAt);
+        s += "\t" + cleanField(serializeLinksJson(g.links));
+        s += "\t" + cleanField(serializeStringArrayJson(g.splitUrls));
         s += "\n";
     }
     return s;
@@ -730,7 +898,7 @@ inline std::vector<Game> loadCatalog(const std::string& s) {
             if (b == std::string::npos) break;
             a = b + 1;
         }
-        if (f.size() != 15) continue;
+        if (f.size() < 15) continue;
         Game g;
         g.id = atoi(f[0].c_str());
         g.title = f[1];
@@ -748,6 +916,14 @@ inline std::vector<Game> loadCatalog(const std::string& s) {
         g.url = f[12];
         g.image = f[13];
         g.updatedAt = strtoll(f[14].c_str(), nullptr, 10);
+        if (f.size() >= 16 && !f[15].empty()) {
+            MiniJson::Value lv;
+            if (MiniJson::parse(f[15], lv)) g.links = parseLinksJsonArray(lv, "");
+        }
+        if (f.size() >= 17 && !f[16].empty()) {
+            MiniJson::Value sv;
+            if (MiniJson::parse(f[16], sv)) g.splitUrls = parseSplitUrlsArray(sv, "");
+        }
         if (g.id > 0 && !g.title.empty() && isHttpUrl(g.url)) {
             v.push_back(std::move(g));
         }

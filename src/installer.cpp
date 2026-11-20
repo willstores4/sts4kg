@@ -95,7 +95,7 @@ PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendAp
             if (e == std::string::npos) break;
             k = e + 1;
         }
-        if (f.size() != 15) continue;
+        if (f.size() < 15) continue;
         InstallPackage t;
         t.id = atoi(f[0].c_str());
         t.itemId = atoi(f[1].c_str());
@@ -116,6 +116,15 @@ PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendAp
         if (!t.contentType) t.contentType = 0x1a;
         t.percent = std::max(-1, std::min(100, atoi(f[13].c_str())));
         t.note = f[14];
+        if (f.size() >= 16 && !f[15].empty()) {
+            MiniJson::Value sv;
+            if (MiniJson::parse(f[15], sv) && sv.type == MiniJson::Value::Array) {
+                for (const auto& el : sv.arrVal) {
+                    std::string u = el.asString();
+                    if (isHttpUrl(u)) t.splitUrls.push_back(u);
+                }
+            }
+        }
         if (t.state == InstallState::Downloading || t.state == InstallState::Registering) {
             t.state = InstallState::Queued;
             t.note = "Aguardando retomada";
@@ -155,6 +164,17 @@ void PackageInstaller::setNoticeLocked(const std::string& msg) {
     pendingNotice = msg;
 }
 
+static std::string serializeSplitUrls(const std::vector<std::string>& urls) {
+    if (urls.empty()) return "";
+    std::string out = "[";
+    for (size_t i = 0; i < urls.size(); ++i) {
+        if (i) out += ",";
+        out += "\"" + jsonEscape(urls[i]) + "\"";
+    }
+    out += "]";
+    return out;
+}
+
 bool PackageInstaller::saveLocked() {
     std::string s;
     for (const auto& t : tasks) {
@@ -166,7 +186,7 @@ bool PackageInstaller::saveLocked() {
              std::to_string((unsigned long long)t.bytes) + "\t" +
              std::to_string((unsigned long long)t.doneBytes) + "\t" +
              std::to_string(t.contentType) + "\t" + std::to_string(t.percent) + "\t" +
-             cleanField(t.note) + "\n";
+             cleanField(t.note) + "\t" + cleanField(serializeSplitUrls(t.splitUrls)) + "\n";
     }
     return saveQueue(root + "/tasks.tsv", s, 0644);
 }
@@ -204,6 +224,7 @@ int PackageInstaller::enqueueHomebrew(const Game& g, InstallMode mode, std::stri
     p.contentType = g.contentType ? g.contentType : 0x1a;
     p.contentFlags = g.contentFlags;
     p.patch = NullBGFT::isPatch(p.contentType, p.contentFlags);
+    p.splitUrls = g.splitUrls;
     p.note = mode == InstallMode::RemoteBgft
                  ? "Enviando para Notificações do PS4..."
                  : "Aguardando download local...";
@@ -454,6 +475,14 @@ void PackageInstaller::loop() {
                 if (manifestSize > 0 && (job.bytes == 0 || pieces.size() > 1)) job.bytes = manifestSize;
                 if (pieces.size() > 1) break;
             }
+            if (ok && pieces.empty() && job.splitUrls.size() > 1) {
+                for (const auto& u : job.splitUrls) {
+                    PkgPiece pc;
+                    pc.url = u;
+                    pieces.push_back(std::move(pc));
+                }
+                job.url = pieces[0].url;
+            }
 
             if (ok && job.mode == InstallMode::RemoteBgft) {
                 // Garante Content ID e tamanho real do cabeçalho PKG antes de enviar ao BGFT
@@ -521,6 +550,9 @@ void PackageInstaller::loop() {
                             error = "Manifesto dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
                             ok = false;
                         }
+                    } else if (pieces.size() > 1) {
+                        error = "Pacote dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
+                        ok = false;
                     } else {
                         ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
                     }

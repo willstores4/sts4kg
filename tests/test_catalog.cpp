@@ -146,6 +146,58 @@ int main() {
     ui.draw();
     assert(ui.c.pixels.size() == 1920 * 1080);
 
+    // Testar catálogo com múltiplos links e partes divididas
+    CatalogData multiCat;
+    assert(parseCatalogJson(R"({
+        "items": [
+            {
+                "id": 20,
+                "title": "App Multi",
+                "category": "Aplicativos",
+                "pkg_url": "/pkgs/base.pkg",
+                "size_bytes": 4096,
+                "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04",
+                "links": [
+                    {"label": "Base", "url": "/pkgs/base.pkg", "size": "4 KB", "size_bytes": 4096, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04"},
+                    {"label": "Update v1.05", "url": "/pkgs/update.pkg", "size": "2 KB", "size_bytes": 2048, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "content_type": 27}
+                ]
+            },
+            {
+                "id": 21,
+                "title": "App Dividido",
+                "category": "Aplicativos",
+                "pkg_url": "/pkgs/p0.pkg",
+                "split_urls": ["/pkgs/p0.pkg", "/pkgs/p1.pkg"]
+            }
+        ]
+    })", "http://192.168.1.2:8765", multiCat, err));
+    assert(multiCat.items.size() == 2);
+    assert(multiCat.items[0].links.size() == 2);
+    assert(multiCat.items[1].splitUrls.size() == 2);
+
+    auto multiRound = loadCatalog(serialize(multiCat.items));
+    assert(multiRound.size() == 2);
+    assert(multiRound[0].links.size() == 2 && multiRound[0].links[1].label == "Update v1.05");
+    assert(multiRound[1].splitUrls.size() == 2);
+
+    ui.tab = 0;
+    ui.games = multiRound;
+    ui.filter();
+    ui.selected = 0;
+    ui.action(CONFIRM); // abre detalhes de App Multi
+    assert(ui.detail && ui.detailLink == 0);
+    ui.action(DOWN); // seleciona Update v1.05
+    assert(ui.detailLink == 1);
+    ui.action(CONFIRM);
+    assert(ui.installBgRequest && ui.installItem.url == "http://192.168.1.2:8765/pkgs/update.pkg");
+    ui.installBgRequest = false;
+    ui.action(DOWN); // seleciona "Instalar TODOS"
+    assert(ui.detailLink == 2);
+    ui.action(CONFIRM);
+    assert(ui.installBgRequest && ui.installBatch.size() == 2);
+    ui.draw();
+    ui.action(BACK);
+
     unlink("build/test-data/favorites.txt");
     rmdir("build/test-data");
     std::cout << "Catalog JSON parser, round-trip, categories, search, install actions and UI rendering passed.\n";

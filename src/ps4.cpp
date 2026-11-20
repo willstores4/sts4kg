@@ -343,11 +343,19 @@ int main() {
             if (!installerReady) {
                 ui.notice = "Instalador indisponível. Reinicie o app.";
             } else {
+                std::vector<Game> batch = std::move(ui.installBatch);
+                if (batch.empty()) batch.push_back(ui.installItem);
                 std::string msg;
-                installer.enqueueHomebrew(ui.installItem, mode, msg);
-                ui.notice = msg;
+                int queuedCount = 0;
+                for (const auto& item : batch) {
+                    if (installer.enqueueHomebrew(item, mode, msg) > 0) ++queuedCount;
+                }
+                ui.notice = batch.size() > 1
+                    ? std::to_string(queuedCount) + " links adicionados à fila!"
+                    : msg;
                 ui.detail = false;
             }
+            ui.installBatch.clear();
             ui.dirty = true;
         }
 

@@ -235,7 +235,7 @@ struct UI {
     std::set<int> favorites;
     std::map<int, Bitmap> covers;
 
-    int selected = 0, tab = 0, sort = 0, key = 0;
+    int selected = 0, tab = 0, sort = 0, key = 0, detailLink = 0;
     bool detail = false, keyboard = false, dirty = true;
     KeyboardTarget kbTarget = KbNone;
     std::string kbBuffer;
@@ -246,6 +246,7 @@ struct UI {
     int taskSelected = 0;
     bool installBgRequest = false, installLocalRequest = false;
     Game installItem;
+    std::vector<Game> installBatch;
 
     // Ações na aba Notificações
     bool taskToggleRequest = false, taskRetryRequest = false, taskCancelRequest = false, taskRemoveRequest = false;
@@ -436,16 +437,34 @@ struct UI {
         }
 
         if (detail) {
+            const Game* cur = current();
+            int nLinks = (cur && !cur->links.empty()) ? int(cur->links.size()) : 1;
+            int totalChoices = (nLinks > 1) ? (nLinks + 1) : 1;
+            if (detailLink < 0 || detailLink >= totalChoices) detailLink = 0;
+
             if (a == BACK) { detail = false; return; }
             if (a == FAVORITE) { favorite(); return; }
-            if (a == CONFIRM && current()) {
-                installItem = *current();
-                installBgRequest = true;
+            if (nLinks > 1 && (a == UP || a == TAB_PREV)) {
+                detailLink = (detailLink + totalChoices - 1) % totalChoices;
                 return;
             }
-            if (a == LOCAL_INSTALL && current()) {
-                installItem = *current();
-                installLocalRequest = true;
+            if (nLinks > 1 && (a == DOWN || a == TAB_NEXT)) {
+                detailLink = (detailLink + 1) % totalChoices;
+                return;
+            }
+            if ((a == CONFIRM || a == LOCAL_INSTALL) && cur) {
+                installBatch.clear();
+                if (nLinks > 1 && detailLink == nLinks) {
+                    for (int li = 0; li < nLinks; ++li) {
+                        installBatch.push_back(gameForLink(*cur, li));
+                    }
+                    installItem = installBatch[0];
+                } else {
+                    installItem = gameForLink(*cur, detailLink);
+                    installBatch.push_back(installItem);
+                }
+                if (a == CONFIRM) installBgRequest = true;
+                else installLocalRequest = true;
                 return;
             }
             return;
@@ -486,7 +505,7 @@ struct UI {
         else if (a == DOWN) selected = std::min(n - 1, selected + 6);
         else if (a == PAGE_PREV) selected = std::max(0, selected - 12);
         else if (a == PAGE_NEXT) selected = std::min(n - 1, selected + 12);
-        else if (a == CONFIRM) detail = true;
+        else if (a == CONFIRM) { detail = true; detailLink = 0; }
     }
 
     void drawCase(const Game& g, int x, int y, int side) {
@@ -700,6 +719,12 @@ struct UI {
         // Modal de Detalhes
         if (detail && current()) {
             const auto& g = *current();
+            int nLinks = !g.links.empty() ? int(g.links.size()) : 1;
+            int totalChoices = (nLinks > 1) ? (nLinks + 1) : 1;
+            int selLink = std::max(0, std::min(detailLink, totalChoices - 1));
+            bool isAll = (nLinks > 1 && selLink == nLinks);
+            Game shown = isAll ? g : gameForLink(g, selLink);
+
             c.rect(285, 190, 1590, 790, 0x06254a);
             c.rect(285, 190, 7, 790, cyan);
             const auto& b = cover(g);
@@ -713,24 +738,55 @@ struct UI {
 
             std::string metaTop = g.category + (g.version.empty() ? "" : "  /  v" + g.version) +
                                   (g.author.empty() ? "" : "  /  " + g.author);
-            c.text(metaTop, 780, 265, 22, cyan, 1040);
-            c.lines(g.title, 780, 335, 46, white, 1020, 2);
+            c.text(metaTop, 780, 255, 22, cyan, 1040);
+            c.lines(g.title, 780, 320, 44, white, 1020, 2);
 
-            std::string subInfo = (g.size.empty() ? "Tamanho auto" : g.size) + "   •   " +
-                                  (g.contentId.empty() ? "Content ID detectado ao instalar" : g.contentId);
-            c.text(subInfo, 780, 455, 24, muted, 1020);
+            std::string cidShow = isAll
+                ? ("Todos os " + std::to_string(nLinks) + " links na fila")
+                : (shown.contentId.empty() ? "Content ID detectado ao instalar" : shown.contentId);
+            std::string sizeShow = isAll
+                ? (g.size.empty() ? std::to_string(nLinks) + " arquivos" : g.size)
+                : (shown.size.empty() ? "Tamanho auto" : shown.size);
+            std::string subInfo = sizeShow + "   •   " + cidShow;
+            if (g.splitUrls.size() > 1) {
+                subInfo += "   •   " + std::to_string(g.splitUrls.size()) + " partes";
+            }
+            c.text(subInfo, 780, 435, 23, muted, 1020);
 
             if (!g.description.empty()) {
-                c.lines(g.description, 780, 515, 24, white, 1020, 4);
+                c.lines(g.description, 780, 485, 22, white, 1020, nLinks > 1 ? 2 : 4);
+            }
+
+            if (nLinks > 1) {
+                c.text("PACOTES DISPONÍVEIS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo para escolher",
+                       780, 548, 18, cyan, 1020);
+                int maxRows = 3;
+                int rowStart = totalChoices > maxRows ? std::max(0, std::min(selLink - 1, totalChoices - maxRows)) : 0;
+                for (int r = 0; r < std::min(maxRows, totalChoices); ++r) {
+                    int idx = rowStart + r;
+                    int ry = 562 + r * 42;
+                    bool activeRow = (idx == selLink);
+                    c.rect(780, ry, 1020, 36, activeRow ? cyan : 0x0b192b);
+                    std::string rLabel = idx == nLinks
+                        ? "[+] Instalar TODOS (" + std::to_string(nLinks) + " arquivos na fila)"
+                        : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
+                    c.text(rLabel, 796, ry + 25, 20, activeRow ? bg : white, 820);
+                    if (idx < nLinks && !g.links[idx].size.empty()) {
+                        c.text(g.links[idx].size, 1630, ry + 25, 18, activeRow ? bg : muted, 155);
+                    }
+                }
             }
 
             c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
-                   780, 645, 22, cyan, 1000);
-            c.rect(780, 675, 1020, 66, cyan);
-            c.text("X  Instalar em Background (Notificações PS4)", 806, 720, 30, bg, 970);
-            c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 780, 780, 24, white, 1020);
-            c.text("CÍRCULO  Voltar ao catálogo", 780, 822, 22, muted);
-            c.lines(g.url, 780, 868, 20, muted, 1020, 2);
+                   780, 712, 21, cyan, 1000);
+            c.rect(780, 730, 1020, 62, cyan);
+            std::string btnTxt = isAll
+                ? "X  Enfileirar TODOS em Notificações PS4"
+                : "X  Instalar em Background (Notificações PS4)";
+            c.text(btnTxt, 806, 772, 28, bg, 970);
+            c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 780, 828, 23, white, 1020);
+            c.text("CÍRCULO  Voltar ao catálogo", 780, 864, 21, muted);
+            c.lines(isAll ? g.url : shown.url, 780, 904, 19, muted, 1020, 2);
         }
 
         // Modal Configurar Servidor

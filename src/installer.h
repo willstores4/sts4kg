@@ -39,6 +39,7 @@ struct InstallPackage {
     uint32_t contentFlags = 0;
     bool patch = false;
     int percent = -1;
+    std::vector<std::string> splitUrls;
 };
 
 inline const char* installStateName(InstallState s) {

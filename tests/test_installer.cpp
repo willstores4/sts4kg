@@ -236,6 +236,24 @@ int main() {
         }
         assert(done && storeReg == 1);
 
+        // Testar partes divididas diretas via splitUrls no LocalStorageEx
+        Game g6 = g;
+        g6.id = 6;
+        g6.title = "Homebrew Split Direct";
+        g6.url = "http://192.168.1.2:8765/pkgs/split_0.pkg";
+        g6.splitUrls = {"http://192.168.1.2:8765/pkgs/split_0.pkg", "http://192.168.1.2:8765/pkgs/split_1.pkg"};
+        int id6 = installer.enqueueHomebrew(g6, InstallMode::LocalStorageEx, msg);
+        assert(id6 > id5);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id6 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && downloaded == 3 && appended == 2 && storageReg == 3);
+
+        installer.removeTask(id6);
         installer.removeTask(id5);
         installer.removeTask(id4);
         installer.removeTask(id3);
