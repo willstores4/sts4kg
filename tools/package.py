@@ -31,7 +31,7 @@ def build():
     build_package(ROOT / "pkg.gp4", ROOT / "build", sys.argv[2])
 
 
-def sfo(title="Homebrew Store", title_id="HBST00001"):
+def sfo(title="WILLGAME Store", title_id="WGST00001"):
     entries = {
         "APP_TYPE": 1,
         "APP_VER": "1.00",
