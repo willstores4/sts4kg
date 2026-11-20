@@ -10,8 +10,10 @@ import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "web-panel"))
-import server as panel_server  # noqa: E402
+HAS_PANEL = (ROOT / "web-panel" / "server.py").is_file()
+if HAS_PANEL:
+    sys.path.insert(0, str(ROOT / "web-panel"))
+    import server as panel_server  # noqa: E402
 
 
 def make_fake_pkg(content_id="IV0000-HBST00099_00-SAMPLEHOMEBREW01", total_size=4096):
@@ -38,6 +40,7 @@ def make_minimal_png():
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
+@unittest.skipUnless(HAS_PANEL, "web-panel/server.py not present in this checkout")
 class WebPanelTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -157,6 +160,59 @@ class WebPanelTests(unittest.TestCase):
 
         status, _, data = self.request("GET", "/api/catalog.json")
         self.assertEqual(json.loads(data)["items"], [])
+
+    def test_json_manifest_resolution_and_catalog_import_export(self):
+        pkg = make_fake_pkg(content_id="IV0000-HBST00077_00-JSONMANIFEST0001", total_size=8192)
+        status, _, data = self.request(
+            "POST", "/api/admin/upload/pkg", body=pkg, headers={"X-Filename": "manifest-target.pkg"}
+        )
+        self.assertEqual(status, 201)
+        pkg_url = f"http://127.0.0.1:{self.port}" + json.loads(data)["pkg_url"]
+
+        # Mini servidor HTTP servindo um manifesto .json apontando para o .pkg acima
+        class ManifestHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                payload = json.dumps({"url": pkg_url}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                pass
+
+        manifest_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), ManifestHandler)
+        threading.Thread(target=manifest_srv.serve_forever, daemon=True).start()
+        self.addCleanup(manifest_srv.server_close)
+        self.addCleanup(manifest_srv.shutdown)
+        manifest_url = f"http://127.0.0.1:{manifest_srv.server_port}/app.json"
+
+        # Inspecionar URL .json pelo painel
+        status, _, data = self.request("POST", "/api/admin/inspect-pkg", {"pkg_url": manifest_url})
+        self.assertEqual(status, 200)
+        info = json.loads(data)
+        self.assertTrue(info["from_json"])
+        self.assertEqual(info["content_id"], "IV0000-HBST00077_00-JSONMANIFEST0001")
+
+        # Importar catálogo .json diretamente
+        status, _, data = self.request(
+            "POST",
+            "/api/admin/import-json",
+            [{"name": "HB via JSON", "url": manifest_url, "category": "JSON Apps", "proxy_pkg": True}],
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)["imported"], 1)
+
+        # Proxy /api/pkg/<id>.pkg resolve .json e entrega os bytes do .pkg com Range
+        status, _, data = self.request("GET", "/api/export.json")
+        self.assertEqual(status, 200)
+        exported = json.loads(data)
+        self.assertEqual(len(exported["items"]), 1)
+        proxy_path = urllib.parse.urlparse(exported["items"][0]["pkg_url"]).path
+        status, _, head_bytes = self.request("GET", proxy_path, headers={"Range": "bytes=0-4095"})
+        self.assertEqual(status, 206)
+        self.assertEqual(head_bytes[:4], b"\x7fCNT")
 
 
 if __name__ == "__main__":

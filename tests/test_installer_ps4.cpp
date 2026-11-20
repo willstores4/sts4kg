@@ -18,6 +18,10 @@ bool portalNetworkFetchRange(const std::string&, std::string& out, uint64_t, siz
     out = "range-ok";
     return true;
 }
+bool portalNetworkFetch(const std::string&, std::string& out, size_t, const std::string&) {
+    out = "{}";
+    return true;
+}
 bool portalNetworkDownloadFile(const std::string&, const std::string&, uint64_t,
                                PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) {
     return true;

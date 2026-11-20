@@ -53,7 +53,15 @@ static void* syncThread(void*) {
 
     setSyncStatus("Sincronizando com " + urlHostLabel(server) + "...");
     std::string body;
-    if (!portalNetworkFetch(server + "/api/catalog.json", body, 8 * 1024 * 1024)) {
+    std::string baseUrl = serverBaseFromCatalogUrl(server);
+    bool fetched = false;
+    if (endsWithJson(server)) {
+        fetched = portalNetworkFetch(server, body, 8 * 1024 * 1024);
+    } else {
+        fetched = portalNetworkFetch(server + "/api/catalog.json", body, 8 * 1024 * 1024) ||
+                  portalNetworkFetch(server + "/catalog.json", body, 8 * 1024 * 1024);
+    }
+    if (!fetched) {
         setSyncStatus("Servidor offline (" + urlHostLabel(server) + ") | Cache local mantido");
         pthread_mutex_lock(&syncLock);
         syncWorking = false;
@@ -63,7 +71,7 @@ static void* syncThread(void*) {
 
     CatalogData parsed;
     std::string err;
-    if (!parseCatalogJson(body, server, parsed, err)) {
+    if (!parseCatalogJson(body, baseUrl, parsed, err)) {
         setSyncStatus("Erro no catálogo: " + err);
         pthread_mutex_lock(&syncLock);
         syncWorking = false;

@@ -54,6 +54,10 @@ static bool pollFn(int, uint64_t& done, uint64_t& total, int& percent, bool& com
     complete = true;
     return true;
 }
+static bool fetchUrlFn(const std::string&, std::string& out, size_t, std::string&) {
+    out = R"({"pkg_url":"http://192.168.1.2:8765/pkgs/resolved.pkg"})";
+    return true;
+}
 static bool fetchHeader(const std::string&, std::string& out, std::string&) {
     ++headerFetched;
     out = makePkgBytes(4096);
@@ -103,6 +107,7 @@ int main() {
     api.stopTask = stopFn;
     api.pollTask = pollFn;
     api.fetchPkgHeader = fetchHeader;
+    api.fetchUrl = fetchUrlFn;
     api.downloadPkgFile = dlFile;
     api.notifySystem = notify;
 
@@ -147,6 +152,23 @@ int main() {
             pauseMs(10);
         }
         assert(done && downloaded == 1 && storageReg == 1 && started == 2);
+
+        // Testar resolução de manifesto .json -> .pkg antes do BGFT
+        Game g3 = g;
+        g3.id = 3;
+        g3.title = "Homebrew JSON";
+        g3.url = "http://192.168.1.2:8765/manifests/hb.json";
+        int id3 = installer.enqueueHomebrew(g3, InstallMode::RemoteBgft, msg);
+        assert(id3 > id2);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id3 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && remoteReg == 2);
+        installer.removeTask(id3);
         installer.removeTask(id2);
         installer.removeTask(id1);
     }

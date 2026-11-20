@@ -405,6 +405,12 @@ static bool fetchPkgHeader(const std::string& url, std::string& outBytes, std::s
     return portalNetworkFetchRange(url, outBytes, 0, 4096, error);
 }
 
+static bool fetchManifestUrl(const std::string& url, std::string& out, size_t cap, std::string& error) {
+    if (portalNetworkFetch(url, out, cap)) return true;
+    error = "Não foi possível baixar o JSON de " + urlHostLabel(url);
+    return false;
+}
+
 InstallBackend ps4InstallBackend() {
     InstallBackend api;
     api.registerRemoteTask = registerRemoteTask;
@@ -415,6 +421,7 @@ InstallBackend ps4InstallBackend() {
     api.stopTask = stopTask;
     api.pollTask = pollTask;
     api.fetchPkgHeader = fetchPkgHeader;
+    api.fetchUrl = fetchManifestUrl;
     api.downloadPkgFile = portalNetworkDownloadFile;
     api.notifySystem = notifySystem;
     return api;

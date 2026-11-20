@@ -11,6 +11,21 @@ int main() {
     assert(normalizeServerUrl("ftp://invalid") == "");
     assert(resolveServerUrl("http://192.168.1.2:8765", "/covers/1.jpg") == "http://192.168.1.2:8765/covers/1.jpg");
     assert(resolveServerUrl("http://192.168.1.2:8765", "https://cdn.example.org/a.pkg") == "https://cdn.example.org/a.pkg");
+    assert(endsWithJson("http://192.168.1.2/hb/manifest.json?v=1"));
+    assert(!endsWithJson("http://192.168.1.2/hb/app.pkg"));
+    assert(serverBaseFromCatalogUrl("http://192.168.1.2/hb/catalog.json") == "http://192.168.1.2/hb");
+
+    std::string resolvedPkg, manifestCid;
+    uint64_t manifestSize = 0;
+    std::string mErr;
+    assert(extractPkgUrlFromJson(R"({"packages":[{"url":"/files/app.pkg"}],"content_id":"IV0000-APOL00004_00-APOLLOSAVETOOL04","size_bytes":4096})",
+                                 "http://192.168.1.2/hb", resolvedPkg, manifestCid, manifestSize, mErr));
+    assert(resolvedPkg == "http://192.168.1.2/hb/files/app.pkg" && manifestSize == 4096);
+
+    CatalogData arrayCat;
+    assert(parseCatalogJson(R"([{"name":"Porte HB","url":"/p.pkg","cover":"/c.jpg","genre":"Jogos Homebrew"}])",
+                            "http://192.168.1.2", arrayCat, mErr));
+    assert(arrayCat.items.size() == 1 && arrayCat.categories.size() == 1 && arrayCat.categories[0].name == "Jogos Homebrew");
 
     std::string json = R"({
         "store_name": "HB_Store",

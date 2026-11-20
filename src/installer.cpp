@@ -418,23 +418,70 @@ void PackageInstaller::loop() {
             std::string error;
             bool ok = true;
 
-            if (job.mode == InstallMode::RemoteBgft) {
+            // Se o link for um manifesto .json, resolve para o link direto do .pkg (até 2 saltos)
+            for (int hop = 0; hop < 2 && ok && endsWithJson(job.url); ++hop) {
+                if (!backend.fetchUrl) {
+                    error = "Busca de manifesto JSON indisponível";
+                    ok = false;
+                    break;
+                }
+                std::string jsonBody;
+                if (!backend.fetchUrl(job.url, jsonBody, 1024 * 1024, error)) {
+                    if (error.empty()) error = "Não foi possível baixar o manifesto JSON";
+                    ok = false;
+                    break;
+                }
+                std::string resolvedUrl, manifestCid;
+                uint64_t manifestSize = 0;
+                if (!extractPkgUrlFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, manifestCid, manifestSize, error)) {
+                    ok = false;
+                    break;
+                }
+                job.url = resolvedUrl;
+                if (!validPkgContentId(job.contentId) && validPkgContentId(manifestCid)) {
+                    job.contentId = manifestCid;
+                    job.titleId = manifestCid.substr(7, 9);
+                }
+                if (job.bytes == 0 && manifestSize > 0) job.bytes = manifestSize;
+            }
+
+            if (ok && job.mode == InstallMode::RemoteBgft) {
                 // Garante Content ID e tamanho real do cabeçalho PKG antes de enviar ao BGFT
                 if ((!validPkgContentId(job.contentId) || job.bytes == 0) && backend.fetchPkgHeader) {
                     std::string header;
                     if (backend.fetchPkgHeader(job.url, header, error)) {
-                        std::string cid, tid;
-                        uint64_t sz = 0;
-                        uint32_t ctype = 0x1a, cflags = 0;
-                        if (parsePkgHeaderBytes((const unsigned char*)header.data(), header.size(), cid, tid, sz, ctype, cflags, error)) {
-                            job.contentId = cid;
-                            job.titleId = tid;
-                            job.bytes = sz;
-                            job.contentType = ctype;
-                            job.contentFlags = cflags;
-                            job.patch = NullBGFT::isPatch(ctype, cflags);
-                        } else {
-                            ok = false;
+                        std::string trimmed = trimStr(header);
+                        if (!trimmed.empty() && (trimmed[0] == '{' || trimmed[0] == '[') && backend.fetchUrl) {
+                            std::string jsonBody, resolvedUrl, manifestCid;
+                            uint64_t manifestSize = 0;
+                            if (backend.fetchUrl(job.url, jsonBody, 1024 * 1024, error) &&
+                                extractPkgUrlFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, manifestCid, manifestSize, error)) {
+                                job.url = resolvedUrl;
+                                if (validPkgContentId(manifestCid)) {
+                                    job.contentId = manifestCid;
+                                    job.titleId = manifestCid.substr(7, 9);
+                                }
+                                if (manifestSize > 0) job.bytes = manifestSize;
+                                header.clear();
+                                if (!backend.fetchPkgHeader(job.url, header, error)) ok = false;
+                            } else {
+                                ok = false;
+                            }
+                        }
+                        if (ok) {
+                            std::string cid, tid;
+                            uint64_t sz = 0;
+                            uint32_t ctype = 0x1a, cflags = 0;
+                            if (parsePkgHeaderBytes((const unsigned char*)header.data(), header.size(), cid, tid, sz, ctype, cflags, error)) {
+                                job.contentId = cid;
+                                job.titleId = tid;
+                                job.bytes = sz;
+                                job.contentType = ctype;
+                                job.contentFlags = cflags;
+                                job.patch = NullBGFT::isPatch(ctype, cflags);
+                            } else {
+                                ok = false;
+                            }
                         }
                     } else {
                         if (error.empty()) error = "Não foi possível ler cabeçalho do PKG na URL";
@@ -448,7 +495,7 @@ void PackageInstaller::loop() {
                 if (ok) {
                     ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
                 }
-            } else {
+            } else if (ok) {
                 std::string dir = root + "/downloads/" + std::to_string(job.id);
                 mkdir(dir.c_str(), 0777);
                 DownloadCtx ctx;

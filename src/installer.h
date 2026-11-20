@@ -77,6 +77,7 @@ struct InstallBackend {
     bool (*stopTask)(int, std::string&) = nullptr;
     bool (*pollTask)(int, uint64_t&, uint64_t&, int&, bool&, std::string&) = nullptr;
     bool (*fetchPkgHeader)(const std::string&, std::string&, std::string&) = nullptr;
+    bool (*fetchUrl)(const std::string&, std::string&, size_t, std::string&) = nullptr;
     bool (*downloadPkgFile)(const std::string&, const std::string&, uint64_t,
                             PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) = nullptr;
     void (*notifySystem)(const std::string&) = nullptr;

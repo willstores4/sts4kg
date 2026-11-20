@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <stdint.h>
@@ -168,6 +169,26 @@ inline std::string urlHostLabel(const std::string& url) {
     if (!p) return url;
     auto end = url.find_first_of("/?#", p);
     return url.substr(p, end - p);
+}
+
+inline bool endsWithJson(const std::string& url) {
+    size_t q = url.find_first_of("?#");
+    std::string path = lower(q == std::string::npos ? url : url.substr(0, q));
+    return path.size() >= 5 && path.compare(path.size() - 5, 5, ".json") == 0;
+}
+
+inline std::string serverBaseFromCatalogUrl(const std::string& url) {
+    std::string u = normalizeServerUrl(url);
+    if (u.empty()) return "";
+    if (!endsWithJson(u)) return u;
+    size_t q = u.find_first_of("?#");
+    std::string noQuery = (q == std::string::npos) ? u : u.substr(0, q);
+    size_t scheme = noQuery.find("://");
+    size_t lastSlash = noQuery.rfind('/');
+    if (lastSlash != std::string::npos && lastSlash > scheme + 2) {
+        return noQuery.substr(0, lastSlash);
+    }
+    return noQuery;
 }
 
 inline uint32_t pkgBig32(const unsigned char* p) {
@@ -424,63 +445,165 @@ inline bool parse(const std::string& jsonText, Value& out) {
 
 } // namespace MiniJson
 
-inline bool parseCatalogJson(const std::string& jsonText, const std::string& serverBase,
-                             CatalogData& out, std::string& error) {
+inline std::string firstJsonString(const MiniJson::Value& obj, std::initializer_list<const char*> keys) {
+    for (const char* k : keys) {
+        if (auto* v = obj.get(k)) {
+            std::string s = trimStr(v->asString());
+            if (!s.empty()) return s;
+        }
+    }
+    return "";
+}
+
+inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string& baseUrl,
+                                  std::string& outPkgUrl, std::string& outContentId,
+                                  uint64_t& outSizeBytes, std::string& error) {
+    outPkgUrl.clear();
     MiniJson::Value root;
-    if (!MiniJson::parse(jsonText, root) || root.type != MiniJson::Value::Object) {
-        error = "Resposta do servidor não é um JSON válido";
+    if (!MiniJson::parse(jsonText, root)) {
+        error = "Manifesto JSON inválido";
         return false;
     }
-    out = CatalogData{};
-    if (auto* v = root.get("store_name")) {
-        if (!v->asString().empty()) out.storeName = v->asString();
+    const MiniJson::Value* obj = &root;
+    if (root.type == MiniJson::Value::Array && !root.arrVal.empty()) {
+        obj = &root.arrVal[0];
     }
-    if (auto* v = root.get("store_subtitle")) {
-        if (!v->asString().empty()) out.storeSubtitle = v->asString();
+    if (obj->type != MiniJson::Value::Object) {
+        error = "JSON sem objeto de pacote";
+        return false;
     }
-    if (auto* v = root.get("updated_at")) out.updatedAt = v->asInt();
 
-    if (auto* cats = root.get("categories")) {
-        if (cats->type == MiniJson::Value::Array) {
-            for (const auto& c : cats->arrVal) {
-                if (c.type != MiniJson::Value::Object) continue;
-                Category cat;
-                if (auto* id = c.get("id")) cat.id = (int)id->asInt();
-                if (auto* name = c.get("name")) cat.name = name->asString();
-                if (auto* slug = c.get("slug")) cat.slug = slug->asString();
-                if (!cat.name.empty()) out.categories.push_back(cat);
+    std::string rawUrl = firstJsonString(*obj, {"pkg_url", "pkgUrl", "url", "pkg", "package", "download_url", "link"});
+    if (rawUrl.empty()) {
+        for (const char* arrKey : {"packages", "items", "assets"}) {
+            if (auto* arr = obj->get(arrKey)) {
+                if (arr->type == MiniJson::Value::Array) {
+                    for (const auto& entry : arr->arrVal) {
+                        if (entry.type != MiniJson::Value::Object) continue;
+                        std::string candidate = firstJsonString(entry, {"pkg_url", "pkgUrl", "url", "browser_download_url", "download_url"});
+                        if (!candidate.empty()) {
+                            rawUrl = candidate;
+                            if (lower(candidate).find(".pkg") != std::string::npos) break;
+                        }
+                    }
+                    if (!rawUrl.empty()) break;
+                }
+            }
+        }
+    }
+    if (rawUrl.empty()) {
+        if (auto* data = obj->get("data")) {
+            if (data->type == MiniJson::Value::Object) {
+                rawUrl = firstJsonString(*data, {"pkg_url", "pkgUrl", "url", "pkg", "download_url"});
             }
         }
     }
 
-    if (auto* items = root.get("items")) {
-        if (items->type != MiniJson::Value::Array) {
+    outPkgUrl = resolveServerUrl(baseUrl, rawUrl);
+    if (!isHttpUrl(outPkgUrl)) {
+        error = "Campo 'url'/'pkg_url' ausente ou inválido no JSON";
+        return false;
+    }
+    std::string cid = firstJsonString(*obj, {"content_id", "contentId", "id"});
+    if (validPkgContentId(cid)) outContentId = cid;
+    if (auto* sz = obj->get("size_bytes")) {
+        if (sz->asUInt() > 0) outSizeBytes = sz->asUInt();
+    } else if (auto* sz2 = obj->get("size")) {
+        if (sz2->type == MiniJson::Value::Number && sz2->asUInt() > 0) outSizeBytes = sz2->asUInt();
+    }
+    return true;
+}
+
+inline bool parseCatalogJson(const std::string& jsonText, const std::string& serverBase,
+                             CatalogData& out, std::string& error) {
+    MiniJson::Value root;
+    if (!MiniJson::parse(jsonText, root)) {
+        error = "Resposta do servidor não é um JSON válido";
+        return false;
+    }
+    out = CatalogData{};
+
+    const std::vector<MiniJson::Value>* itemsArr = nullptr;
+    if (root.type == MiniJson::Value::Array) {
+        itemsArr = &root.arrVal;
+    } else if (root.type == MiniJson::Value::Object) {
+        if (auto* v = root.get("store_name")) {
+            if (!v->asString().empty()) out.storeName = v->asString();
+        }
+        if (auto* v = root.get("store_subtitle")) {
+            if (!v->asString().empty()) out.storeSubtitle = v->asString();
+        }
+        if (auto* v = root.get("updated_at")) out.updatedAt = v->asInt();
+
+        if (auto* cats = root.get("categories")) {
+            if (cats->type == MiniJson::Value::Array) {
+                for (const auto& c : cats->arrVal) {
+                    if (c.type != MiniJson::Value::Object) continue;
+                    Category cat;
+                    if (auto* id = c.get("id")) cat.id = (int)id->asInt();
+                    cat.name = firstJsonString(c, {"name", "title"});
+                    if (auto* slug = c.get("slug")) cat.slug = slug->asString();
+                    if (!cat.name.empty()) out.categories.push_back(cat);
+                }
+            }
+        }
+
+        for (const char* k : {"items", "homebrews", "packages", "apps", "games"}) {
+            if (auto* arr = root.get(k)) {
+                if (arr->type == MiniJson::Value::Array) {
+                    itemsArr = &arr->arrVal;
+                    break;
+                }
+            }
+        }
+        if (!itemsArr) {
             error = "Campo 'items' inválido no catálogo";
             return false;
         }
-        for (const auto& it : items->arrVal) {
-            if (it.type != MiniJson::Value::Object) continue;
-            Game g;
-            if (auto* v = it.get("id")) g.id = (int)v->asInt();
-            if (auto* v = it.get("title")) g.title = v->asString();
-            if (auto* v = it.get("category")) g.category = v->asString();
-            if (auto* v = it.get("category_id")) g.categoryId = (int)v->asInt();
-            if (auto* v = it.get("version")) g.version = v->asString();
-            if (auto* v = it.get("author")) g.author = v->asString();
-            if (auto* v = it.get("description")) g.description = v->asString();
-            if (auto* v = it.get("size_bytes")) g.sizeBytes = v->asUInt();
-            if (auto* v = it.get("size")) g.size = v->asString();
-            if (g.size.empty() && g.sizeBytes > 0) g.size = bytesText(g.sizeBytes);
-            if (auto* v = it.get("content_id")) g.contentId = v->asString();
-            if (auto* v = it.get("content_type")) g.contentType = (uint32_t)v->asUInt(0x1a);
-            if (auto* v = it.get("content_flags")) g.contentFlags = (uint32_t)v->asUInt(0);
-            if (auto* v = it.get("pkg_url")) g.url = resolveServerUrl(serverBase, v->asString());
-            if (auto* v = it.get("cover_url")) g.image = resolveServerUrl(serverBase, v->asString());
-            if (auto* v = it.get("updated_at")) g.updatedAt = v->asInt();
+    } else {
+        error = "Formato JSON de catálogo não suportado";
+        return false;
+    }
 
-            if (g.category.empty()) g.category = "Geral";
-            if (g.id > 0 && !g.title.empty() && isHttpUrl(g.url)) {
-                out.items.push_back(std::move(g));
+    int autoId = 1;
+    for (const auto& it : *itemsArr) {
+        if (it.type != MiniJson::Value::Object) continue;
+        Game g;
+        if (auto* v = it.get("id")) g.id = (int)v->asInt();
+        if (g.id <= 0) g.id = autoId;
+        ++autoId;
+
+        g.title = firstJsonString(it, {"title", "name"});
+        g.category = firstJsonString(it, {"category", "genre", "type"});
+        if (auto* v = it.get("category_id")) g.categoryId = (int)v->asInt();
+        g.version = firstJsonString(it, {"version", "ver"});
+        g.author = firstJsonString(it, {"author", "developer", "publisher"});
+        g.description = firstJsonString(it, {"description", "desc"});
+        if (auto* v = it.get("size_bytes")) g.sizeBytes = v->asUInt();
+        g.size = firstJsonString(it, {"size", "size_text"});
+        if (g.size.empty() && g.sizeBytes > 0) g.size = bytesText(g.sizeBytes);
+        g.contentId = firstJsonString(it, {"content_id", "contentId"});
+        if (auto* v = it.get("content_type")) g.contentType = (uint32_t)v->asUInt(0x1a);
+        if (auto* v = it.get("content_flags")) g.contentFlags = (uint32_t)v->asUInt(0);
+        g.url = resolveServerUrl(serverBase, firstJsonString(it, {"pkg_url", "pkgUrl", "url", "pkg", "download_url"}));
+        g.image = resolveServerUrl(serverBase, firstJsonString(it, {"cover_url", "coverUrl", "cover", "image", "image_url", "icon"}));
+        if (auto* v = it.get("updated_at")) g.updatedAt = v->asInt();
+
+        if (g.category.empty()) g.category = "Geral";
+        if (g.id > 0 && !g.title.empty() && isHttpUrl(g.url)) {
+            out.items.push_back(std::move(g));
+        }
+    }
+
+    if (out.categories.empty() && !out.items.empty()) {
+        std::set<std::string> seen;
+        int cid = 1;
+        for (const auto& item : out.items) {
+            if (seen.insert(lower(item.category)).second) {
+                Category cat;
+                cat.id = cid++;
+                cat.name = item.category;
+                out.categories.push_back(cat);
             }
         }
     }
