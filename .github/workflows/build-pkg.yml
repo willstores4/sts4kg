@@ -1,25 +1,22 @@
-name: Build PS4 PKG
+name: Build PS4 Homebrew Store PKG
 
 on:
   push:
     branches: [main, master]
     tags: ['v*']
-    paths-ignore: ['**/*.md', 'screenshots/**']
+    paths-ignore: ['**/*.md']
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write   # necessário para publicar Releases em tags v*
+  contents: write
 
 env:
   OO_TOOLCHAIN_VERSION: v0.5.4
   OO_TOOLCHAIN_ASSET: toolchain-llvm-18.tar.gz
   LLVM_VERSION: '18'
-  # Itemzflow jb.prx (GPL-3.0), revisão citada no README
-  ITEMZFLOW_REV: e71c284c61db3fce53936178db30dd38be7ba47b
-  ITEMZFLOW_JB_SHA256: a06d09989e0a5df001866a57ada34412287f21e757e5a7c71c05d8a28b930ecb
   DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: '1'
-  NULLSTORE_KEEP_ICONS: '1'   # usa os ícones já versionados (não regera com outra fonte)
+  NULLSTORE_KEEP_ICONS: '1'
 
 jobs:
   build:
@@ -61,70 +58,47 @@ jobs:
             "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/${OO_TOOLCHAIN_VERSION}/${OO_TOOLCHAIN_ASSET}" \
             | tar -xz -C "$RUNNER_TEMP/toolchain"
 
-      - name: Locate toolchain
+      - name: Locate toolchain and copy sce_module
         run: |
+          set -euo pipefail
           LINKX=$(find "$RUNNER_TEMP/toolchain" -maxdepth 4 -name link.x -print -quit)
           test -n "$LINKX" || { echo "::error::link.x não encontrado no toolchain"; exit 1; }
           OO="$(dirname "$LINKX")"
           chmod -R +x "$OO/bin/linux"
           echo "OO_PS4_TOOLCHAIN=$OO" >> "$GITHUB_ENV"
-          echo "Toolchain: $OO"
-          ls -la "$OO/bin/linux"
 
-      - name: Prepare external assets (sce_module, compat-jb.prx, covers)
-        run: |
-          set -euo pipefail
-          # Runtime modules gerados pelo toolchain (copiados para os samples)
           mkdir -p sce_module
           for m in libc.prx libSceFios2.prx; do
-            src=$(find "$OO_PS4_TOOLCHAIN" -name "$m" -path '*sce_module*' -print -quit)
+            src=$(find "$OO" -name "$m" -path '*sce_module*' -print -quit)
             test -n "$src" || { echo "::error::$m não encontrado no toolchain"; exit 1; }
             cp "$src" sce_module/
           done
-          ls -la sce_module
 
-          # Módulo de compatibilidade do Itemzflow (sem modificações)
-          URL="https://raw.githubusercontent.com/LightningMods/Itemzflow/${ITEMZFLOW_REV}/App-Media-Assets/Media/jb.prx"
-          curl -fL --retry 3 -o assets/service/compat-jb.prx "$URL"
-          echo "${ITEMZFLOW_JB_SHA256}  assets/service/compat-jb.prx" | sha256sum -c -
-          cat > assets/service/COMPAT-PROVENANCE.txt <<EOF
-          compat-jb.prx is the unmodified jb.prx from LightningMods/Itemzflow (GPL-3.0).
-          Revision: ${ITEMZFLOW_REV}
-          Source:   ${URL}
-          SHA-256:  ${ITEMZFLOW_JB_SHA256}
-          EOF
-
-          # Capas: usa as que estiverem no repositório (assets/covers/*.jpg); pode ficar vazio.
-          mkdir -p assets/covers
-          echo "Covers: $(ls assets/covers/*.jpg 2>/dev/null | wc -l)"
-
-      - name: Build NULL_store PKG
-        run: make LLVM="$LLVM_BIN" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN"
-
-      - name: Build Background Service PKG
-        run: make LLVM="$LLVM_BIN" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" service-package
-
-      - name: Validate packages
-        continue-on-error: true
+      - name: Run host & web panel unit tests
         run: |
-          PKGTOOL="$OO_PS4_TOOLCHAIN/bin/linux/PkgTool.Core"
-          for p in build/*.pkg; do "$PKGTOOL" pkg_validate "$p" || true; done
-          python3 tools/verify_package.py build/IV0000-NULL00001_00-NULLSTOR00000000.pkg --tool "$PKGTOOL" --catalog
+          make LLVM="$LLVM_BIN" HOST_CXX="$LLVM_BIN/clang++" HOST_CC="$LLVM_BIN/clang" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" test
+
+      - name: Build Homebrew Store PKG
+        run: |
+          make LLVM="$LLVM_BIN" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN"
+
+      - name: Validate PKG
+        run: |
+          make LLVM="$LLVM_BIN" OO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN" validate
 
       - name: Collect artifacts
         id: collect
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then VER="${GITHUB_REF_NAME#v}"; else VER="dev-${GITHUB_SHA::7}"; fi
           mkdir -p dist
-          cp build/IV0000-NULL00001_00-NULLSTOR00000000.pkg "dist/NULL_store-PS4-${VER}.pkg"
-          cp build/IV0000-NULL00002_00-NULLSTORSERVICE0.pkg "dist/NULL_store-Background-Service-${VER}.pkg"
+          cp build/IV0000-HBST00001_00-HBSTORE000000000.pkg "dist/HomebrewStore-PS4-${VER}.pkg"
           (cd dist && sha256sum *.pkg | tee SHA256SUMS.txt)
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NULL_store-PKGs-${{ steps.collect.outputs.version }}
+          name: HomebrewStore-PKG-${{ steps.collect.outputs.version }}
           path: dist/*
           if-no-files-found: error
 
