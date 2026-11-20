@@ -1,6 +1,6 @@
 CC ?= gcc
-CFLAGS := -g -O1 -mcmodel=small -isystem include -nostdinc -nostdlib -fno-stack-protector -ffreestanding -fPIE -Wall -Wextra -Wno-unused-parameter
-LDFLAGS := -static -nostdlib -no-pie -Wl,-gc-sections
+CFLAGS := -g -mcmodel=small -isystem include -nostdinc -nostdlib -fno-stack-protector -ffreestanding -fPIE -Wall -Wextra -Wno-unused-parameter
+LDFLAGS := -static -nostdlib -Wl,-gc-sections
 
 all: payload.elf
 

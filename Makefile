@@ -54,7 +54,7 @@ build/text_input_ps4.o: src/text_input_ps4.cpp src/text_input_ps4.h src/network_
 assets/bgft_template.elf: payload/Makefile payload/main.c payload/info.c payload/struct.h $(wildcard payload/include/*.h payload/include/sys/*.h payload/ps4-libjbc/*) payload/lib/lib.a
 	$(MAKE) -C payload CC=gcc payload.elf
 	cp payload/payload.elf $@
-	python3 -c "d=open('$@','rb').read(); assert d[:4]==b'\x7fELF' and int.from_bytes(d[16:18],'little')==2 and b'WILL_BGFT_CFG_1\x00' in d, 'Invalid bgft_template.elf'"
+	python3 -c "d=open('$@','rb').read(); assert d[:4]==b'\x7fELF' and int.from_bytes(d[16:18],'little')==2 and d.count(b'WILL_BGFT_CFG_1\x00')==1, 'Invalid bgft_template.elf'"
 
 build/hbstore.elf: tools/link_ps4.py build/main.o build/network_ps4.o build/installer.o build/installer_ps4.o build/text_input_ps4.o
 	python3 tools/link_ps4.py $(LD) --no-mmap-output-file -m elf_x86_64 -pie --script $(OO_PS4_TOOLCHAIN)/link.x --eh-frame-hdr -L$(OO_PS4_TOOLCHAIN)/lib $(OO_PS4_TOOLCHAIN)/lib/crt1.o $(filter %.o,$^) $(LIBS) -lSceImeDialog -lSceCommonDialog -o $@

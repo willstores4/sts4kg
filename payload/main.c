@@ -50,20 +50,33 @@ int main(void) {
 	clear_stack();
 
 	void* libSceSysUtil = dlopen("/system/common/lib/libSceSysUtil.sprx", 0);
-	int(*sceSysUtilSendSystemNotificationWithText)(int, const char*) = dlsym(libSceSysUtil, "sceSysUtilSendSystemNotificationWithText");
+	int(*sceSysUtilSendSystemNotificationWithText)(int, const char*) =
+		libSceSysUtil ? dlsym(libSceSysUtil, "sceSysUtilSendSystemNotificationWithText") : NULL;
 
 	void* usrsrv = dlopen("/system/common/lib/libSceUserService.sprx", 0);
-	int(*sceUserServiceInitialize)(OrbisUserServiceInitializeParams*) = dlsym(usrsrv, "sceUserServiceInitialize");
-	int(*sceUserServiceGetForegroundUser)(int*) = dlsym(usrsrv, "sceUserServiceGetForegroundUser");
-	int(*sceUserServiceGetInitialUser)(int*) = dlsym(usrsrv, "sceUserServiceGetInitialUser");
-	int(*sceUserServiceTerminate)(void) = dlsym(usrsrv, "sceUserServiceTerminate");
+	int(*sceUserServiceInitialize)(OrbisUserServiceInitializeParams*) =
+		usrsrv ? dlsym(usrsrv, "sceUserServiceInitialize") : NULL;
+	int(*sceUserServiceGetForegroundUser)(int*) =
+		usrsrv ? dlsym(usrsrv, "sceUserServiceGetForegroundUser") : NULL;
+	int(*sceUserServiceGetInitialUser)(int*) =
+		usrsrv ? dlsym(usrsrv, "sceUserServiceGetInitialUser") : NULL;
+	int(*sceUserServiceTerminate)(void) =
+		usrsrv ? dlsym(usrsrv, "sceUserServiceTerminate") : NULL;
 
 	void* bgft = dlopen("/system/common/lib/libSceBgft.sprx", 0);
-	int(*sceBgftInitialize)(struct bgft_init_params*) = dlsym(bgft, "sceBgftServiceIntInit");
-	int(*sceBgftDownloadRegisterTask)(struct bgft_download_param*, int*) = dlsym(bgft, "sceBgftServiceDownloadRegisterTask");
-	int(*sceBgftDownloadRegisterTaskStore)(struct bgft_download_param*, int*, void*) = dlsym(bgft, "sceBgftServiceIntDownloadRegisterTaskStore");
-	int(*sceBgftDebugDownloadRegisterTask)(struct bgft_download_param*, int*) = dlsym(bgft, "sceBgftServiceIntDebugDownloadRegisterPkg");
-	int(*sceBgftDownloadStartTask)(int) = dlsym(bgft, "sceBgftServiceIntDownloadStartTask");
+	int(*sceBgftInitialize)(struct bgft_init_params*) =
+		bgft ? dlsym(bgft, "sceBgftServiceIntInit") : NULL;
+	if (bgft && !sceBgftInitialize) sceBgftInitialize = dlsym(bgft, "sceBgftServiceInit");
+	int(*sceBgftDownloadRegisterTask)(struct bgft_download_param*, int*) =
+		bgft ? dlsym(bgft, "sceBgftServiceDownloadRegisterTask") : NULL;
+	int(*sceBgftDownloadRegisterTaskStore)(struct bgft_download_param*, int*, void*) =
+		bgft ? dlsym(bgft, "sceBgftServiceIntDownloadRegisterTaskStore") : NULL;
+	int(*sceBgftDebugDownloadRegisterTask)(struct bgft_download_param*, int*) =
+		bgft ? dlsym(bgft, "sceBgftServiceIntDebugDownloadRegisterPkg") : NULL;
+	int(*sceBgftDownloadStartTask)(int) =
+		bgft ? dlsym(bgft, "sceBgftServiceIntDownloadStartTask") : NULL;
+	int(*sceBgftPublicStartTask)(int) =
+		bgft ? dlsym(bgft, "sceBgftServiceDownloadStartTask") : NULL;
 
 	clear_stack();
 
@@ -72,15 +85,28 @@ int main(void) {
 	};
 
 	int uid = -1;
-	sceUserServiceInitialize(&init_params);
-	if (sceUserServiceGetForegroundUser(&uid) != 0 || uid < 0) {
+	if (sceUserServiceInitialize) sceUserServiceInitialize(&init_params);
+	if (!sceUserServiceGetForegroundUser || sceUserServiceGetForegroundUser(&uid) != 0 || uid < 0) {
 		if (sceUserServiceGetInitialUser) sceUserServiceGetInitialUser(&uid);
 	}
-	sceUserServiceTerminate();
+	if (sceUserServiceTerminate) sceUserServiceTerminate();
+	if (uid < 0) {
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, "WILL: Nenhum usuário ativo no PS4.");
+		return -1;
+	}
 
 	void* libSceAppInstUtil = dlopen("/system/common/lib/libSceAppInstUtil.sprx", 0);
-	int(*sceAppInstUtilInitialize)(void) = dlsym(libSceAppInstUtil, "sceAppInstUtilInitialize");
-	int(*sceAppInstUtilTerminate)(void) = dlsym(libSceAppInstUtil, "sceAppInstUtilTerminate");
+	int(*sceAppInstUtilInitialize)(void) =
+		libSceAppInstUtil ? dlsym(libSceAppInstUtil, "sceAppInstUtilInitialize") : NULL;
+	int(*sceAppInstUtilTerminate)(void) =
+		libSceAppInstUtil ? dlsym(libSceAppInstUtil, "sceAppInstUtilTerminate") : NULL;
+
+	if (!sceAppInstUtilInitialize) {
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, "WILL: Falha ao carregar AppInstUtil.");
+		return -1;
+	}
 
 	int rv = sceAppInstUtilInitialize();
 	if (rv) {
@@ -92,8 +118,23 @@ int main(void) {
 		return -1;
 	}
 
+	if (!sceBgftInitialize || (!sceBgftDownloadStartTask && !sceBgftPublicStartTask)) {
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, "WILL: Falha ao carregar libSceBgft.");
+		if (sceAppInstUtilTerminate) sceAppInstUtilTerminate();
+		return -1;
+	}
+
+	void* bgft_mem = mmap(NULL, 0x100000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (bgft_mem == NULL || bgft_mem == MAP_FAILED) {
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, "WILL: Sem memória para BGFT.");
+		if (sceAppInstUtilTerminate) sceAppInstUtilTerminate();
+		return -1;
+	}
+
 	struct bgft_init_params ip = {
-		.mem = mmap(NULL, 0x100000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+		.mem = bgft_mem,
 		.size = 0x100000,
 	};
 
@@ -104,7 +145,7 @@ int main(void) {
 		int32ToHex(rv, errCode);
 		concat("WILL Installer: BGFT Init ", errCode, err);
 		if (sceSysUtilSendSystemNotificationWithText) sceSysUtilSendSystemNotificationWithText(222, err);
-		sceAppInstUtilTerminate();
+		if (sceAppInstUtilTerminate) sceAppInstUtilTerminate();
 		munmap(ip.mem, ip.size);
 		return -1;
 	}
@@ -114,13 +155,13 @@ int main(void) {
 		.entitlement_type = 5,
 		.id = "",
 		.content_url = "",
-		.content_ex_url = "",
+		.content_ex_url = NULL,
 		.content_name = "",
 		.icon_path = "",
-		.sku_id = "",
+		.sku_id = NULL,
 		.option = BGFT_TASK_OPTION_DISABLE_CDN_QUERY_PARAM,
 		.playgo_scenario_id = "0",
-		.release_date = "",
+		.release_date = NULL,
 		.package_type = "PS4GD",
 		.package_sub_type = "",
 		.package_size = 0
@@ -131,7 +172,7 @@ int main(void) {
 		if (rv == -1) {
 			if (sceSysUtilSendSystemNotificationWithText)
 				sceSysUtilSendSystemNotificationWithText(222, "WILL Installer: GET INFO ERROR");
-			sceAppInstUtilTerminate();
+			if (sceAppInstUtilTerminate) sceAppInstUtilTerminate();
 			munmap(ip.mem, ip.size);
 			return -1;
 		}
@@ -139,44 +180,54 @@ int main(void) {
 
 		int is_manifest = url_has_json_ext(bgft_params.content_url);
 		int task = BGFT_INVALID_TASK_ID;
+		int registered = 0;
 		unsigned char store_err[0x100];
 
 		if (is_manifest && sceBgftDownloadRegisterTaskStore) {
 			task = BGFT_INVALID_TASK_ID;
 			for (int j = 0; j < 0x100; j++) store_err[j] = 0;
 			rv = sceBgftDownloadRegisterTaskStore(&bgft_params, &task, store_err);
-			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) {
-				rv = sceBgftDownloadStartTask(task);
-				if (rv == 0) break;
-			}
+			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) registered = 1;
 		}
 
-		if (sceBgftDownloadRegisterTask) {
+		if (!registered && sceBgftDownloadRegisterTask) {
 			task = BGFT_INVALID_TASK_ID;
 			rv = sceBgftDownloadRegisterTask(&bgft_params, &task);
-			if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
-				rv = sceBgftDownloadStartTask(task);
-				if (rv == 0) break;
-			}
+			if (rv >= 0 && (uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) registered = 1;
 		}
 
-		if (sceBgftDebugDownloadRegisterTask) {
+		if (!registered && (uint32_t)rv != 0x80990088u && sceBgftDebugDownloadRegisterTask) {
 			task = BGFT_INVALID_TASK_ID;
 			rv = sceBgftDebugDownloadRegisterTask(&bgft_params, &task);
-			if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
-				rv = sceBgftDownloadStartTask(task);
-				if (rv == 0) break;
-			}
+			if (rv >= 0 && (uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) registered = 1;
 		}
 
-		if (!is_manifest && sceBgftDownloadRegisterTaskStore) {
+		if (!registered && !is_manifest && (uint32_t)rv != 0x80990088u && sceBgftDownloadRegisterTaskStore) {
 			task = BGFT_INVALID_TASK_ID;
 			for (int j = 0; j < 0x100; j++) store_err[j] = 0;
 			rv = sceBgftDownloadRegisterTaskStore(&bgft_params, &task, store_err);
-			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) {
-				rv = sceBgftDownloadStartTask(task);
-				if (rv == 0) break;
+			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) registered = 1;
+		}
+
+		if (registered) {
+			int start_rv = sceBgftDownloadStartTask ? sceBgftDownloadStartTask(task) : -1;
+			if (start_rv != 0 && sceBgftPublicStartTask) {
+				start_rv = sceBgftPublicStartTask(task);
 			}
+			if (start_rv == 0) {
+				if (sceSysUtilSendSystemNotificationWithText)
+					sceSysUtilSendSystemNotificationWithText(222, "WILL: Download iniciado em Notificações!");
+				break;
+			}
+			rv = start_rv;
+			if (sceSysUtilSendSystemNotificationWithText) {
+				char err[0x200] = "\x0";
+				char errCode[0x20] = "\x0";
+				int32ToHex(rv, errCode);
+				concat("WILL: Falha ao iniciar tarefa ", errCode, err);
+				sceSysUtilSendSystemNotificationWithText(222, err);
+			}
+			break;
 		}
 
 		if (!sceSysUtilSendSystemNotificationWithText) break;
