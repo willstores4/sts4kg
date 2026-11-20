@@ -108,7 +108,7 @@ test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_
 	./build/test_installer_retry
 	./build/test_startup_ps4
 	./build/test_text_input
-	python3 -m unittest tests/test_web_panel.py -v
+	@if [ -f web-panel/server.py ]; then python3 -m unittest tests/test_web_panel.py -v; else echo "Skipping test_web_panel.py (web-panel/server.py not present)"; fi
 
 clean:
 	rm -rf build eboot.bin pkg.gp4 sce_sys/param.sfo
