@@ -17,8 +17,6 @@ REQUIRED_FILES = (
     "assets/service/TLS-PROVENANCE.txt",
     "sce_module/libc.prx",
     "sce_module/libSceFios2.prx",
-    "sce_sys/icon0.png",
-    "sce_sys/param.sfo",
 )
 
 
@@ -49,19 +47,32 @@ def verify_installer_self(data):
     print("Installer permissions verified in the extracted application executable.")
 
 
-def verify(folder):
+def verify(extract_root):
+    uroot = extract_root / "uroot" if (extract_root / "uroot").is_dir() else extract_root
     for name in REQUIRED_FILES:
-        actual = folder / name
+        actual = uroot / name
         expected = ROOT / name
         if not actual.is_file():
             raise RuntimeError(f"Missing from extracted PKG: {name}")
         if hashlib.sha256(actual.read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest():
             raise RuntimeError(f"PKG payload differs from source: {name}")
-    sfo = (folder / "sce_sys/param.sfo").read_bytes()
-    if sfo[:4] != b"\x00PSF" or b"HBST00001\0" not in sfo:
-        raise RuntimeError("Invalid param.sfo")
-    verify_installer_self((folder / "eboot.bin").read_bytes())
-    print("Extracted PKG verified: executable, installer auth, trust store, server config, font and runtime modules match.")
+
+    # LibOrbisPkg extracts sce_sys entries (param.sfo, icon0.png) into Sc0/ (sibling of uroot/).
+    for sys_name in ("param.sfo", "icon0.png"):
+        actual = next((p for p in extract_root.rglob(sys_name) if p.is_file()), None)
+        if not actual:
+            raise RuntimeError(f"Missing system entry from extracted PKG: {sys_name}")
+        if sys_name == "param.sfo":
+            sfo = actual.read_bytes()
+            if sfo[:4] != b"\x00PSF" or b"HBST00001\0" not in sfo:
+                raise RuntimeError("Invalid param.sfo")
+        else:
+            expected = ROOT / "sce_sys" / sys_name
+            if hashlib.sha256(actual.read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest():
+                raise RuntimeError(f"PKG system entry differs from source: {sys_name}")
+
+    verify_installer_self((uroot / "eboot.bin").read_bytes())
+    print("Extracted PKG verified: executable, installer auth, trust store, server config, font, icon, SFO and runtime modules match.")
 
 
 def main():
@@ -79,7 +90,7 @@ def main():
         )
         if result.returncode:
             raise RuntimeError("Package extraction failed: " + (result.stderr or result.stdout)[-1500:])
-        verify(folder / "uroot" if (folder / "uroot").is_dir() else folder)
+        verify(folder)
 
 
 if __name__ == "__main__":
