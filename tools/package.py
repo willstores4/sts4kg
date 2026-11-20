@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PKG_LOCK = ROOT / "build/.pkg-build.lock"
-CID = "IV0000-HBST00001_00-HBSTORE000000000"
+CID = "IV0000-WGST00001_00-WGSTORE000000000"
 
 
 def build_package(project, output, tool):
