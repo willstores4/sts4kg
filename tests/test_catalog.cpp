@@ -183,7 +183,7 @@ int main() {
     ui.tab = 0;
     ui.games = multiRound;
     ui.filter();
-    ui.selected = 0;
+    ui.selected = (ui.games[ui.visible[0]].id == 20) ? 0 : 1;
     ui.action(CONFIRM); // abre detalhes de App Multi
     assert(ui.detail && ui.detailLink == 0);
     ui.action(DOWN); // seleciona Update v1.05
