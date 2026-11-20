@@ -604,7 +604,7 @@ struct UI {
         // Cabeçalho principal
         c.text(storeName + " /", 352, 62, 20, cyan, 260);
         c.text(tabTitle(tab), 530, 62, 20, white, 500);
-        c.text(query.empty() ? "Loja Homebrew PS4" : "Busca: " + query, 352, 124, 44, white, 1220);
+        c.text(query.empty() ? "Loja WILLGAME PS4" : "Busca: " + query, 352, 124, 44, white, 1220);
 
         const char* sorts[] = {"Mais recentes", "Nome A-Z", "Menor tamanho", "Maior tamanho"};
         c.rounded(1622, 25, 276, 42, 5, 0x0d2018);
