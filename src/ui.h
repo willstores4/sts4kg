@@ -733,21 +733,21 @@ struct UI {
             bool isAll = (nLinks > 1 && selLink == nLinks);
             Game shown = isAll ? g : gameForLink(g, selLink);
 
-            c.rect(285, 190, 1590, 790, 0x06254a);
-            c.rect(285, 190, 7, 790, cyan);
+            c.rect(340, 190, 1560, 790, 0x06254a);
+            c.rect(340, 190, 7, 790, cyan);
             const auto& b = cover(g);
             if (!b.p.empty()) {
-                c.image(b, 330, 235, 400, 520);
+                c.image(b, 382, 235, 390, 510);
             } else {
-                c.rect(330, 235, 400, 520, panel);
-                c.text("HOMEBREW PKG", 360, 290, 22, cyan);
-                c.lines(g.title, 360, 345, 28, white, 340, 4);
+                c.rect(382, 235, 390, 510, panel);
+                c.text("HOMEBREW PKG", 412, 290, 22, cyan);
+                c.lines(g.title, 412, 345, 28, white, 330, 4);
             }
 
             std::string metaTop = g.category + (g.version.empty() ? "" : "  /  v" + g.version) +
                                   (g.author.empty() ? "" : "  /  " + g.author);
-            c.text(metaTop, 780, 255, 22, cyan, 1040);
-            c.lines(g.title, 780, 320, 44, white, 1020, 2);
+            c.text(metaTop, 810, 255, 22, cyan, 1042);
+            c.lines(g.title, 810, 320, 44, white, 1042, 2);
 
             std::string cidShow = isAll
                 ? ("Todos os " + std::to_string(nLinks) + " links na fila")
@@ -759,10 +759,10 @@ struct UI {
             if (g.splitUrls.size() > 1) {
                 subInfo += "   •   " + std::to_string(g.splitUrls.size()) + " partes";
             }
-            c.text(subInfo, 780, 435, 23, muted, 1020);
+            c.text(subInfo, 810, 435, 23, muted, 1042);
 
             if (!g.description.empty()) {
-                c.lines(g.description, 780, 480, 22, white, 1020, nLinks > 1 ? 2 : 4);
+                c.lines(g.description, 810, 480, 22, white, 1042, nLinks > 1 ? 2 : 4);
             }
 
             if (nLinks > 1) {
@@ -772,25 +772,25 @@ struct UI {
                 std::string hintHdr = hasScroll
                     ? ("LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo ou L2/R2 para rolar, X para instalar:")
                     : ("SELECIONE O LINK (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo e X para instalar:");
-                c.text(hintHdr, 780, 540, 18, cyan, 1020);
-                int btnW = hasScroll ? 996 : 1020;
+                c.text(hintHdr, 810, 540, 18, cyan, 1042);
+                int btnW = hasScroll ? 1018 : 1042;
                 for (int r = 0; r < std::min(maxBtns, totalChoices); ++r) {
                     int idx = rowStart + r;
                     int by = 556 + r * 60;
                     bool activeBtn = (idx == selLink);
-                    c.rect(780, by, btnW, 50, activeBtn ? cyan : 0x12325c);
-                    if (!activeBtn) c.rect(780, by, 5, 50, cyan);
+                    c.rect(810, by, btnW, 50, activeBtn ? cyan : 0x12325c);
+                    if (!activeBtn) c.rect(810, by, 5, 50, cyan);
                     std::string bName = idx == nLinks
                         ? "Instalar TODOS (" + std::to_string(nLinks) + " links na fila)"
                         : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
                     std::string bText = (activeBtn ? "X  " : "   ") + bName;
-                    c.text(bText, 800, by + 33, 24, activeBtn ? bg : white, hasScroll ? 800 : 825);
+                    c.text(bText, 830, by + 33, 24, activeBtn ? bg : white, hasScroll ? 812 : 836);
                     if (idx < nLinks && !g.links[idx].size.empty()) {
-                        c.text(g.links[idx].size, hasScroll ? 1612 : 1635, by + 32, 19, activeBtn ? bg : muted, 150);
+                        c.text(g.links[idx].size, hasScroll ? 1650 : 1674, by + 32, 19, activeBtn ? bg : muted, 155);
                     }
                 }
                 if (hasScroll) {
-                    const int sbX = 1790, sbY = 556, sbW = 10, sbH = 230;
+                    const int sbX = 1842, sbY = 556, sbW = 10, sbH = 230;
                     c.rect(sbX, sbY, sbW, sbH, 0x081322);
                     int thumbH = std::max(28, sbH * maxBtns / totalChoices);
                     int maxOffset = std::max(1, totalChoices - maxBtns);
@@ -804,17 +804,17 @@ struct UI {
                     }
                 }
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
-                       780, 816, 20, cyan, 1000);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 780, 850, 22, white, 1020);
-                c.lines(isAll ? g.url : shown.url, 780, 892, 19, muted, 1020, 2);
+                       810, 816, 20, cyan, 1020);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 22, white, 1042);
+                c.lines(isAll ? g.url : shown.url, 810, 892, 19, muted, 1042, 2);
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
-                       780, 645, 22, cyan, 1000);
-                c.rect(780, 675, 1020, 66, cyan);
-                c.text("X  Instalar em Background (Notificações PS4)", 806, 720, 30, bg, 970);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 780, 780, 24, white, 1020);
-                c.text("CÍRCULO  Voltar ao catálogo", 780, 822, 22, muted);
-                c.lines(shown.url, 780, 868, 20, muted, 1020, 2);
+                       810, 645, 22, cyan, 1020);
+                c.rect(810, 675, 1042, 66, cyan);
+                c.text("X  Instalar em Background (Notificações PS4)", 836, 720, 30, bg, 990);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 810, 780, 24, white, 1042);
+                c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }
 
