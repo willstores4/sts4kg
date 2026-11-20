@@ -23,6 +23,19 @@ static void concat(const char* StringA, const char* StringB, char* Output) {
 	Output[Offset] = 0;
 }
 
+static int url_has_json_ext(const char* url) {
+	if (!url) return 0;
+	int end = 0;
+	while (url[end] != 0 && url[end] != '?' && url[end] != '#') end++;
+	if (end < 5) return 0;
+	char a = url[end - 5];
+	char b = (url[end - 4] >= 'A' && url[end - 4] <= 'Z') ? (char)(url[end - 4] + 32) : url[end - 4];
+	char c = (url[end - 3] >= 'A' && url[end - 3] <= 'Z') ? (char)(url[end - 3] + 32) : url[end - 3];
+	char d = (url[end - 2] >= 'A' && url[end - 2] <= 'Z') ? (char)(url[end - 2] + 32) : url[end - 2];
+	char e = (url[end - 1] >= 'A' && url[end - 1] <= 'Z') ? (char)(url[end - 1] + 32) : url[end - 1];
+	return a == '.' && b == 'j' && c == 's' && d == 'o' && e == 'n';
+}
+
 int main(void) {
 	struct jbc_cred cred;
 	jbc_get_cred(&cred);
@@ -48,6 +61,7 @@ int main(void) {
 	void* bgft = dlopen("/system/common/lib/libSceBgft.sprx", 0);
 	int(*sceBgftInitialize)(struct bgft_init_params*) = dlsym(bgft, "sceBgftServiceIntInit");
 	int(*sceBgftDownloadRegisterTask)(struct bgft_download_param*, int*) = dlsym(bgft, "sceBgftServiceDownloadRegisterTask");
+	int(*sceBgftDownloadRegisterTaskStore)(struct bgft_download_param*, int*, void*) = dlsym(bgft, "sceBgftServiceIntDownloadRegisterTaskStore");
 	int(*sceBgftDebugDownloadRegisterTask)(struct bgft_download_param*, int*) = dlsym(bgft, "sceBgftServiceIntDebugDownloadRegisterPkg");
 	int(*sceBgftDownloadStartTask)(int) = dlsym(bgft, "sceBgftServiceIntDownloadStartTask");
 
@@ -123,18 +137,46 @@ int main(void) {
 		}
 		if (rv == 1) break;
 
+		int is_manifest = url_has_json_ext(bgft_params.content_url);
 		int task = BGFT_INVALID_TASK_ID;
-		rv = sceBgftDownloadRegisterTask(&bgft_params, &task);
-		if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
-			rv = sceBgftDownloadStartTask(task);
-			if (rv == 0) break;
+		unsigned char store_err[0x100];
+
+		if (is_manifest && sceBgftDownloadRegisterTaskStore) {
+			task = BGFT_INVALID_TASK_ID;
+			for (int j = 0; j < 0x100; j++) store_err[j] = 0;
+			rv = sceBgftDownloadRegisterTaskStore(&bgft_params, &task, store_err);
+			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) {
+				rv = sceBgftDownloadStartTask(task);
+				if (rv == 0) break;
+			}
 		}
 
-		task = BGFT_INVALID_TASK_ID;
-		rv = sceBgftDebugDownloadRegisterTask(&bgft_params, &task);
-		if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
-			rv = sceBgftDownloadStartTask(task);
-			if (rv == 0) break;
+		if (sceBgftDownloadRegisterTask) {
+			task = BGFT_INVALID_TASK_ID;
+			rv = sceBgftDownloadRegisterTask(&bgft_params, &task);
+			if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
+				rv = sceBgftDownloadStartTask(task);
+				if (rv == 0) break;
+			}
+		}
+
+		if (sceBgftDebugDownloadRegisterTask) {
+			task = BGFT_INVALID_TASK_ID;
+			rv = sceBgftDebugDownloadRegisterTask(&bgft_params, &task);
+			if ((uint32_t)rv != 0x80990088u && task != BGFT_INVALID_TASK_ID) {
+				rv = sceBgftDownloadStartTask(task);
+				if (rv == 0) break;
+			}
+		}
+
+		if (!is_manifest && sceBgftDownloadRegisterTaskStore) {
+			task = BGFT_INVALID_TASK_ID;
+			for (int j = 0; j < 0x100; j++) store_err[j] = 0;
+			rv = sceBgftDownloadRegisterTaskStore(&bgft_params, &task, store_err);
+			if (rv >= 0 && task != BGFT_INVALID_TASK_ID) {
+				rv = sceBgftDownloadStartTask(task);
+				if (rv == 0) break;
+			}
 		}
 
 		if (!sceSysUtilSendSystemNotificationWithText) break;

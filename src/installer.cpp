@@ -548,25 +548,38 @@ void PackageInstaller::loop() {
                 }
                 if (ok) {
                     if (pieces.size() > 1 && !manifestUrl.empty()) {
+                        job.url = manifestUrl;
+                        if (job.bytes == 0 && manifestSizeTotal > 0) job.bytes = manifestSizeTotal;
                         if (job.mode == InstallMode::BinLoaderElf) {
-                            error = "Manifesto dividido requer 'Fazer proxy pelo painel' ou instalação local (L3)";
-                            ok = false;
-                        } else {
-                            job.url = manifestUrl;
-                            if (job.bytes == 0 && manifestSizeTotal > 0) job.bytes = manifestSizeTotal;
-                            if (backend.registerStoreTask) {
-                                ok = backend.registerStoreTask(job, job.taskId, error) && job.taskId >= 0;
-                                if (!ok && error.find("proxy") == std::string::npos) {
-                                    error += " — Ative 'Fazer proxy pelo painel' no painel web ou use L3 (Local)";
-                                }
+                            if (backend.sendBinLoaderElf) {
+                                ok = backend.sendBinLoaderElf(job, error);
                             } else {
-                                error = "Manifesto dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
+                                error = "Envio BinLoader ELF indisponível";
                                 ok = false;
+                            }
+                        } else {
+                            ok = backend.registerStoreTask && backend.registerStoreTask(job, job.taskId, error) && job.taskId >= 0;
+                            if (!ok) {
+                                std::string fallbackErr;
+                                if (backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, fallbackErr) && job.taskId >= 0) {
+                                    error.clear();
+                                    ok = true;
+                                } else if (error.empty()) {
+                                    error = fallbackErr.empty() ? "Falha ao registrar manifesto dividido no PS4" : fallbackErr;
+                                }
                             }
                         }
                     } else if (pieces.size() > 1) {
-                        error = "Pacote dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
-                        ok = false;
+                        if (job.mode == InstallMode::BinLoaderElf) {
+                            if (backend.sendBinLoaderElf) {
+                                ok = backend.sendBinLoaderElf(job, error);
+                            } else {
+                                error = "Envio BinLoader ELF indisponível";
+                                ok = false;
+                            }
+                        } else {
+                            ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
+                        }
                     } else if (job.mode == InstallMode::BinLoaderElf) {
                         if (backend.sendBinLoaderElf) {
                             ok = backend.sendBinLoaderElf(job, error);

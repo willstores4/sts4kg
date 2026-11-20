@@ -276,6 +276,23 @@ int main() {
         }
         assert(done && binLoaderSent == 1);
 
+        // Manifesto dividido (.manifest.json) com BinLoader ELF sem exigir proxy ou L3
+        Game g8 = g;
+        g8.id = 8;
+        g8.title = "Homebrew Split ELF";
+        g8.url = "http://192.168.1.2:8765/pkgs/split.manifest.json";
+        int id8 = installer.enqueueHomebrew(g8, InstallMode::BinLoaderElf, msg);
+        assert(id8 > id7);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id8 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && binLoaderSent == 2);
+
+        installer.removeTask(id8);
         installer.removeTask(id7);
         installer.removeTask(id6);
         installer.removeTask(id5);

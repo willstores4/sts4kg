@@ -616,6 +616,57 @@ class WebPanelTests(unittest.TestCase):
         })
         self.assertEqual(status, 400)
 
+        # Manifesto dividido (.manifest.json) com proxy_pkg=False deve gerar .ELF direto sem exigir proxy
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class ManifestOnlyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({
+                    "originalFileSize": 8192,
+                    "pieces": [
+                        {"url": f"http://127.0.0.1:{self.server.server_port}/part_0.pkg", "fileOffset": 0, "fileSize": 4096},
+                        {"url": f"http://127.0.0.1:{self.server.server_port}/part_1.pkg", "fileOffset": 4096, "fileSize": 4096},
+                    ],
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                return
+
+        manifest_srv = ThreadingHTTPServer(("127.0.0.1", 0), ManifestOnlyHandler)
+        threading.Thread(target=manifest_srv.serve_forever, daemon=True).start()
+        self.addCleanup(manifest_srv.shutdown)
+        self.addCleanup(manifest_srv.server_close)
+        manifest_url = f"http://127.0.0.1:{manifest_srv.server_address[1]}/app.manifest.json"
+
+        status, _, split_data = self.request("POST", "/api/admin/homebrews", {
+            "title": "Split Manifest ELF",
+            "pkg_url": manifest_url,
+            "content_id": "IV0000-WGST00078_00-SPLITELF00000001",
+            "size_bytes": 8192,
+            "content_type": 26,
+            "proxy_pkg": False,
+            "use_binloader": True,
+        })
+        self.assertEqual(status, 201)
+        split_item = json.loads(split_data)["item"]
+        self.assertEqual(split_item["proxy_pkg"], 0)
+        self.assertEqual(split_item["use_binloader"], 1)
+
+        status, _, split_elf = self.request("GET", f"/api/pkg/{split_item['id']}.elf")
+        self.assertEqual(status, 200)
+        spos = split_elf.find(b"WILL_BGFT_CFG_1\x00")
+        self.assertGreater(spos, 0)
+        self.assertEqual(struct.unpack_from("<Q", split_elf, spos + 16)[0], 8192)
+        self.assertEqual(
+            split_elf[spos + 24 : spos + 24 + 1024].split(b"\x00", 1)[0],
+            manifest_url.encode("utf-8"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
