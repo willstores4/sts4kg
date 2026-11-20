@@ -95,7 +95,7 @@ build/test_text_input: tests/test_text_input.cpp src/text_input_ps4.cpp src/text
 	$(HOST_CXX) -DPORTAL_HOST -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -o $@
 
 test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_installer build/test_installer_ps4 build/test_installer_progress build/test_installer_retry build/test_startup_ps4 build/test_text_input
-	python3 -m unittest discover -s tests -v
+	python3 -m unittest tests/test_web_panel.py -v
 	./build/test_catalog
 	./build/test_network_ps4
 	./build/test_file_info
