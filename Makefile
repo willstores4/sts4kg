@@ -16,6 +16,7 @@ PS4_LD ?= $(LLVM)/ld.lld
 CREATE_FSELF ?= $(OO_PS4_TOOLCHAIN)/bin/linux/create-fself
 endif
 CC := $(LLVM)/clang++
+PAYLOAD_CC ?= gcc
 LD := $(PS4_LD)
 PKGTOOL ?= $(OO_PS4_TOOLCHAIN)/bin/$(OO_HOST)/PkgTool.Core
 export PKGTOOL
@@ -45,10 +46,15 @@ build/network_ps4.o: src/network_ps4.cpp src/network_ps4.h src/catalog.h src/dat
 	$(CC) $(CFLAGS) -c $< -o $@
 build/installer.o: src/installer.cpp src/installer.h src/catalog.h src/queue_store.h src/bgft_abi.h src/install_log.h src/path_info.h
 	$(CC) $(CFLAGS) -c $< -o $@
-build/installer_ps4.o: src/installer_ps4.cpp src/installer.h src/bgft_abi.h src/network_ps4.h src/install_log.h
+build/installer_ps4.o: src/installer_ps4.cpp src/installer.h src/bgft_abi.h src/binloader_elf.h src/network_ps4.h src/install_log.h
 	$(CC) $(CFLAGS) -c $< -o $@
 build/text_input_ps4.o: src/text_input_ps4.cpp src/text_input_ps4.h src/network_ps4.h
 	$(CC) $(CFLAGS) -c $< -o $@
+
+assets/bgft_template.elf: payload/Makefile payload/main.c payload/info.c payload/struct.h $(wildcard payload/include/*.h payload/include/sys/*.h payload/ps4-libjbc/*) payload/lib/lib.a
+	$(MAKE) -C payload CC=gcc payload.elf
+	cp payload/payload.elf $@
+	python3 -c "d=open('$@','rb').read(); assert d[:4]==b'\x7fELF' and int.from_bytes(d[16:18],'little')==2 and b'WILL_BGFT_CFG_1\x00' in d, 'Invalid bgft_template.elf'"
 
 build/hbstore.elf: tools/link_ps4.py build/main.o build/network_ps4.o build/installer.o build/installer_ps4.o build/text_input_ps4.o
 	python3 tools/link_ps4.py $(LD) --no-mmap-output-file -m elf_x86_64 -pie --script $(OO_PS4_TOOLCHAIN)/link.x --eh-frame-hdr -L$(OO_PS4_TOOLCHAIN)/lib $(OO_PS4_TOOLCHAIN)/lib/crt1.o $(filter %.o,$^) $(LIBS) -lSceImeDialog -lSceCommonDialog -o $@
@@ -63,7 +69,7 @@ assets/server.txt:
 	@mkdir -p assets
 	printf 'http://192.168.1.2:8765\n' > $@
 
-pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/server.txt assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
+pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/server.txt assets/bgft_template.elf assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
 	python3 tools/package.py gp4
 
 build/$(CONTENT_ID).pkg: pkg.gp4
@@ -97,8 +103,10 @@ build/test_startup_ps4: tests/test_startup_ps4.cpp src/startup_ps4.h src/install
 	$(HOST_CXX) -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -o $@
 build/test_text_input: tests/test_text_input.cpp src/text_input_ps4.cpp src/text_input_ps4.h
 	$(HOST_CXX) -DPORTAL_HOST -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -o $@
+build/test_binloader_elf: tests/test_binloader_elf.cpp src/binloader_elf.h src/bgft_abi.h src/catalog.h src/installer.h
+	$(HOST_CXX) -DPORTAL_HOST -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -lpthread -o $@
 
-test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_installer build/test_installer_ps4 build/test_installer_progress build/test_installer_retry build/test_startup_ps4 build/test_text_input
+test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_installer build/test_installer_ps4 build/test_installer_progress build/test_installer_retry build/test_startup_ps4 build/test_text_input build/test_binloader_elf
 	./build/test_catalog
 	./build/test_network_ps4
 	./build/test_file_info
@@ -108,9 +116,10 @@ test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_
 	./build/test_installer_retry
 	./build/test_startup_ps4
 	./build/test_text_input
+	./build/test_binloader_elf
 	@if [ -f web-panel/server.py ]; then python3 -m unittest tests/test_web_panel.py -v; else echo "Skipping test_web_panel.py (web-panel/server.py not present)"; fi
 
 clean:
-	rm -rf build eboot.bin pkg.gp4 sce_sys/param.sfo
+	rm -rf build eboot.bin pkg.gp4 sce_sys/param.sfo assets/bgft_template.elf payload/payload.elf payload/payload.bin
 
 -include $(wildcard build/*.d)

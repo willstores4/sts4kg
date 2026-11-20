@@ -233,7 +233,6 @@ int main() {
                 {ORBIS_PAD_BUTTON_RIGHT, RIGHT},
                 {ORBIS_PAD_BUTTON_CROSS, CONFIRM},
                 {ORBIS_PAD_BUTTON_CIRCLE, BACK},
-                {ORBIS_PAD_BUTTON_TRIANGLE, SEARCH},
                 {ORBIS_PAD_BUTTON_SQUARE, FAVORITE},
                 {ORBIS_PAD_BUTTON_L1, TAB_PREV},
                 {ORBIS_PAD_BUTTON_R1, TAB_NEXT},
@@ -247,6 +246,13 @@ int main() {
             }
 
             const int dlTab = ui.downloadsTab();
+            if (edge & ORBIS_PAD_BUTTON_TRIANGLE) {
+                if (ui.detail && !ui.keyboard && !ui.serverPicker) {
+                    ui.action(BINLOADER_INSTALL);
+                } else {
+                    ui.action(SEARCH);
+                }
+            }
             if (edge & ORBIS_PAD_BUTTON_L3) {
                 if (ui.detail && !ui.keyboard && !ui.serverPicker) {
                     ui.action(LOCAL_INSTALL);
@@ -336,10 +342,12 @@ int main() {
             startSync(ui.serverUrl);
         }
 
-        // Ações de Instalação (Notificações BGFT ou Local StorageEx)
-        if (ui.installBgRequest || ui.installLocalRequest) {
-            InstallMode mode = ui.installBgRequest ? InstallMode::RemoteBgft : InstallMode::LocalStorageEx;
-            ui.installBgRequest = ui.installLocalRequest = false;
+        // Ações de Instalação (Notificações BGFT, Local StorageEx ou BinLoader ELF 9090)
+        if (ui.installBgRequest || ui.installLocalRequest || ui.installBinLoaderRequest) {
+            InstallMode mode = ui.installBgRequest ? InstallMode::RemoteBgft
+                             : ui.installLocalRequest ? InstallMode::LocalStorageEx
+                             : InstallMode::BinLoaderElf;
+            ui.installBgRequest = ui.installLocalRequest = ui.installBinLoaderRequest = false;
             if (!installerReady) {
                 ui.notice = "Instalador indisponível. Reinicie o app.";
             } else {

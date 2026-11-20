@@ -340,3 +340,100 @@ bool portalNetworkAppendFile(const std::string& url, const std::string& destPath
                              std::string& error) {
     return performGet(url, nullptr, 0, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, error);
 }
+
+extern "C" int nbNetSocket(const char*, int, int, int) __asm__("sceNetSocket");
+extern "C" int nbNetConnect(int, const void*, uint32_t) __asm__("sceNetConnect");
+extern "C" int nbNetSend(int, const void*, size_t, int) __asm__("sceNetSend");
+extern "C" int nbNetClose(int) __asm__("sceNetSocketClose");
+
+struct OrbisRawSockaddrIn {
+    uint8_t len;
+    uint8_t family;
+    uint16_t port;
+    uint32_t addr;
+    unsigned char zero[8];
+};
+static_assert(sizeof(OrbisRawSockaddrIn) == 16, "Orbis IPv4 sockaddr_in ABI");
+
+static bool parseIpv4NetworkOrder(const std::string& ip, uint32_t& outAddr) {
+    unsigned parts[4] = {};
+    int idx = 0;
+    unsigned val = 0;
+    bool hasDigit = false;
+    for (size_t i = 0; i <= ip.size(); ++i) {
+        if (i == ip.size() || ip[i] == '.') {
+            if (!hasDigit || val > 255 || idx >= 4) return false;
+            parts[idx++] = val;
+            val = 0;
+            hasDigit = false;
+        } else if (ip[i] >= '0' && ip[i] <= '9') {
+            hasDigit = true;
+            val = val * 10 + unsigned(ip[i] - '0');
+            if (val > 255) return false;
+        } else {
+            return false;
+        }
+    }
+    if (idx != 4) return false;
+    outAddr = (parts[0]) | (parts[1] << 8) | (parts[2] << 16) | (parts[3] << 24);
+    return true;
+}
+
+bool portalNetworkSendTcp(const std::string& hostIp, uint16_t port, const std::string& data, std::string& error) {
+    error.clear();
+    if (data.empty()) {
+        error = "Payload ELF vazio";
+        return false;
+    }
+    uint32_t netIp = 0;
+    if (!parseIpv4NetworkOrder(hostIp, netIp)) {
+        error = "IP do BinLoader inválido: " + hostIp;
+        return false;
+    }
+    if (!portalNetworkInit()) {
+        error = "Falha ao inicializar rede PS4";
+        return false;
+    }
+    int sock = nbNetSocket("WILLBinLoader", 2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
+    if (sock < 0) {
+        char buf[128];
+        snprintf(buf, sizeof buf, "Falha ao abrir socket BinLoader (0x%08X)", (unsigned)sock);
+        error = buf;
+        return false;
+    }
+
+    OrbisRawSockaddrIn addr = {};
+    addr.len = sizeof(addr);
+    addr.family = 2; // AF_INET
+    addr.port = uint16_t(((port & 0xffu) << 8) | ((port >> 8) & 0xffu));
+    addr.addr = netIp;
+
+    int rc = nbNetConnect(sock, &addr, sizeof(addr));
+    if (rc < 0) {
+        nbNetClose(sock);
+        char buf[192];
+        snprintf(buf, sizeof buf, "BinLoader inacessível em %s:%u (0x%08X) — ative o BinLoader no GoldHEN",
+                 hostIp.c_str(), (unsigned)port, (unsigned)rc);
+        error = buf;
+        portalNetworkTrace("BinLoader connect failed %s:%u rc=0x%08X", hostIp.c_str(), (unsigned)port, (unsigned)rc);
+        return false;
+    }
+
+    size_t sent = 0;
+    while (sent < data.size()) {
+        int n = nbNetSend(sock, data.data() + sent, data.size() - sent, 0);
+        if (n <= 0) {
+            nbNetClose(sock);
+            char buf[160];
+            snprintf(buf, sizeof buf, "Falha ao enviar payload para BinLoader (%d / 0x%08X)", n, (unsigned)n);
+            error = buf;
+            portalNetworkTrace("BinLoader send failed %s:%u n=%d sent=%zu/%zu",
+                               hostIp.c_str(), (unsigned)port, n, sent, data.size());
+            return false;
+        }
+        sent += size_t(n);
+    }
+    nbNetClose(sock);
+    portalNetworkTrace("BinLoader sent %zu bytes to %s:%u", sent, hostIp.c_str(), (unsigned)port);
+    return true;
+}

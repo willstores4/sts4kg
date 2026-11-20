@@ -30,6 +30,14 @@ bool portalNetworkAppendFile(const std::string&, const std::string&, uint64_t,
                              PortalDownloadProgressFn, PortalDownloadStopFn, void*, std::string&) {
     return true;
 }
+static std::string lastTcpHost, lastTcpData;
+static uint16_t lastTcpPort = 0;
+bool portalNetworkSendTcp(const std::string& host, uint16_t port, const std::string& data, std::string&) {
+    lastTcpHost = host;
+    lastTcpPort = port;
+    lastTcpData = data;
+    return true;
+}
 
 extern "C" int32_t sceKernelGetModuleList(uint32_t* handles, size_t size, size_t* count) {
     assert(size >= mappedNames.size());
@@ -128,6 +136,7 @@ int main() {
     std::string error;
     int id = 123;
     assert(api.appendPkgFile != nullptr);
+    assert(api.sendBinLoaderElf != nullptr);
     assert(api.registerRemoteTask(pkg, id, error) && id == 42 && registerRemoteCalls == 1 && initCalls == 1);
     InstallPackage storePkg = pkg;
     storePkg.url = "http://192.168.1.2:8765/manifests/split.manifest.json";

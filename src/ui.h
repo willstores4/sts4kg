@@ -214,7 +214,7 @@ inline Bitmap loadBlueCase(const std::string& p) {
 enum Action {
     UP, DOWN, LEFT, RIGHT, CONFIRM, BACK, SEARCH, FAVORITE,
     TAB_PREV, TAB_NEXT, SORT, REFRESH, PAGE_PREV, PAGE_NEXT,
-    DOWNLOADS, SERVER_CONFIG, LOCAL_INSTALL, REMOVE_TASK
+    DOWNLOADS, SERVER_CONFIG, LOCAL_INSTALL, BINLOADER_INSTALL, REMOVE_TASK
 };
 
 struct UI {
@@ -244,7 +244,7 @@ struct UI {
     // Fila de instalações / Notificações PS4
     std::vector<InstallPackage> tasks;
     int taskSelected = 0;
-    bool installBgRequest = false, installLocalRequest = false;
+    bool installBgRequest = false, installLocalRequest = false, installBinLoaderRequest = false;
     Game installItem;
     std::vector<Game> installBatch;
 
@@ -460,7 +460,7 @@ struct UI {
                 detailLink = std::min(totalChoices - 1, detailLink + 4);
                 return;
             }
-            if ((a == CONFIRM || a == LOCAL_INSTALL) && cur) {
+            if ((a == CONFIRM || a == LOCAL_INSTALL || a == BINLOADER_INSTALL) && cur) {
                 installBatch.clear();
                 if (nLinks > 1 && detailLink == nLinks) {
                     for (int li = 0; li < nLinks; ++li) {
@@ -472,7 +472,8 @@ struct UI {
                     installBatch.push_back(installItem);
                 }
                 if (a == CONFIRM) installBgRequest = true;
-                else installLocalRequest = true;
+                else if (a == LOCAL_INSTALL) installLocalRequest = true;
+                else installBinLoaderRequest = true;
                 return;
             }
             return;
@@ -805,15 +806,15 @@ struct UI {
                 }
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 816, 20, cyan, 1020);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 22, white, 1042);
+                c.text("L3  Local (App)     TRIÂNGULO  BinLoader ELF (127.0.0.1:9090)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 20, white, 1042);
                 c.lines(isAll ? g.url : shown.url, 810, 892, 19, muted, 1042, 2);
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
                 c.rect(810, 675, 1042, 66, cyan);
                 c.text("X  Instalar em Background (Notificações PS4)", 836, 720, 30, bg, 990);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 810, 780, 24, white, 1042);
-                c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                c.text("L3  Baixar no App + Instalar (Local)     TRIÂNGULO  BinLoader ELF (127.0.0.1:9090)", 810, 780, 22, white, 1042);
+                c.text("R3  Ver Notificações     CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted, 1042);
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }

@@ -8,7 +8,7 @@
 #include <unistd.h>
 
 static std::string root;
-static std::atomic<int> remoteReg(0), storeReg(0), storageReg(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), appended(0), notified(0);
+static std::atomic<int> remoteReg(0), storeReg(0), storageReg(0), binLoaderSent(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), appended(0), notified(0);
 
 static void pauseMs(int n) {
     struct timespec ts = {n / 1000, (n % 1000) * 1000000};
@@ -48,6 +48,12 @@ static bool regStorage(const InstallPackage& p, int& id, std::string&) {
     assert(p.contentId == "IV0000-TEST00001_00-TESTPACKAGE00001");
     id = 43;
     ++storageReg;
+    return true;
+}
+static bool sendBinLoaderFn(const InstallPackage& p, std::string&) {
+    assert(p.contentId == "IV0000-TEST00001_00-TESTPACKAGE00001");
+    assert(p.bytes == 4096);
+    ++binLoaderSent;
     return true;
 }
 static bool start(int, std::string&) { ++started; return true; }
@@ -135,6 +141,7 @@ int main() {
     api.registerRemoteTask = regRemote;
     api.registerStoreTask = regStore;
     api.registerStorageTask = regStorage;
+    api.sendBinLoaderElf = sendBinLoaderFn;
     api.startTask = start;
     api.pauseTask = pauseFn;
     api.resumeTask = resumeFn;
@@ -253,6 +260,23 @@ int main() {
         }
         assert(done && downloaded == 3 && appended == 2 && storageReg == 3);
 
+        // Testar envio BinLoader ELF (127.0.0.1:9090)
+        Game g7 = g;
+        g7.id = 7;
+        g7.title = "Homebrew ELF";
+        g7.url = "http://192.168.1.2:8765/pkgs/elf.pkg";
+        int id7 = installer.enqueueHomebrew(g7, InstallMode::BinLoaderElf, msg);
+        assert(id7 > id6);
+        done = false;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id7 && item.state == InstallState::Complete) done = true;
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && binLoaderSent == 1);
+
+        installer.removeTask(id7);
         installer.removeTask(id6);
         installer.removeTask(id5);
         installer.removeTask(id4);

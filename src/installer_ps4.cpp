@@ -1,6 +1,7 @@
 #include "installer.h"
 #include "install_log.h"
 #include "bgft_abi.h"
+#include "binloader_elf.h"
 #include "network_ps4.h"
 #include <orbis/Sysmodule.h>
 #include <orbis/UserService.h>
@@ -453,11 +454,21 @@ static bool fetchManifestUrl(const std::string& url, std::string& out, size_t ca
     return false;
 }
 
+static bool sendBinLoaderTask(const InstallPackage& pkg, std::string& error) {
+    std::string tpl = loadBinLoaderTemplateElf();
+    std::string elf;
+    if (!buildBinLoaderPayloadElf(tpl, pkg, elf, error)) return false;
+    installLog("BinLoader ELF send: url=%s content=%s size=%llu elfBytes=%zu -> 127.0.0.1:9090",
+               pkg.url.c_str(), pkg.contentId.c_str(), (unsigned long long)pkg.bytes, elf.size());
+    return portalNetworkSendTcp("127.0.0.1", 9090, elf, error);
+}
+
 InstallBackend ps4InstallBackend() {
     InstallBackend api;
     api.registerRemoteTask = registerRemoteTask;
     api.registerStoreTask = registerStoreTask;
     api.registerStorageTask = registerStorageTask;
+    api.sendBinLoaderElf = sendBinLoaderTask;
     api.startTask = startTask;
     api.pauseTask = pauseTask;
     api.resumeTask = resumeTask;

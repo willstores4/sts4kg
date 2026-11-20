@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = (
     "eboot.bin",
+    "assets/bgft_template.elf",
     "assets/font.ttf",
     "assets/server.txt",
     "assets/service/cacert.pem",

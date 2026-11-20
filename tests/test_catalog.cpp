@@ -130,6 +130,10 @@ int main() {
     ui.installBgRequest = false;
     ui.action(LOCAL_INSTALL);
     assert(ui.installLocalRequest);
+    ui.installLocalRequest = false;
+    ui.action(BINLOADER_INSTALL);
+    assert(ui.installBinLoaderRequest);
+    ui.installBinLoaderRequest = false;
     ui.action(BACK);
     assert(!ui.detail);
 

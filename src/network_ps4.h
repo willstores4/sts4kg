@@ -14,4 +14,5 @@ bool portalNetworkDownloadFile(const std::string& url, const std::string& destPa
 bool portalNetworkAppendFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                              PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                              std::string& error);
+bool portalNetworkSendTcp(const std::string& hostIp, uint16_t port, const std::string& data, std::string& error);
 void portalNetworkTrace(const char*, ...);

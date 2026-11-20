@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-enum class InstallMode { RemoteBgft = 0, LocalStorageEx = 1 };
+enum class InstallMode { RemoteBgft = 0, LocalStorageEx = 1, BinLoaderElf = 2 };
 
 enum class InstallState {
     Queued = 0,
@@ -73,6 +73,7 @@ struct InstallBackend {
     bool (*registerRemoteTask)(const InstallPackage&, int&, std::string&) = nullptr;
     bool (*registerStoreTask)(const InstallPackage&, int&, std::string&) = nullptr;
     bool (*registerStorageTask)(const InstallPackage&, int&, std::string&) = nullptr;
+    bool (*sendBinLoaderElf)(const InstallPackage&, std::string&) = nullptr;
     bool (*startTask)(int, std::string&) = nullptr;
     bool (*pauseTask)(int, std::string&) = nullptr;
     bool (*resumeTask)(int, std::string&) = nullptr;

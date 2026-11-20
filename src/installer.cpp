@@ -100,7 +100,10 @@ PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendAp
         t.id = atoi(f[0].c_str());
         t.itemId = atoi(f[1].c_str());
         t.taskId = atoi(f[2].c_str());
-        t.mode = atoi(f[3].c_str()) == 1 ? InstallMode::LocalStorageEx : InstallMode::RemoteBgft;
+        int m = atoi(f[3].c_str());
+        t.mode = m == 1 ? InstallMode::LocalStorageEx
+               : m == 2 ? InstallMode::BinLoaderElf
+               : InstallMode::RemoteBgft;
         int st = atoi(f[4].c_str());
         if (t.id <= 0 || st < 0 || st > 8) continue;
         t.state = InstallState(st);
@@ -227,7 +230,9 @@ int PackageInstaller::enqueueHomebrew(const Game& g, InstallMode mode, std::stri
     p.splitUrls = g.splitUrls;
     p.note = mode == InstallMode::RemoteBgft
                  ? "Enviando para Notificações do PS4..."
-                 : "Aguardando download local...";
+                 : mode == InstallMode::BinLoaderElf
+                       ? "Gerando ELF para BinLoader (127.0.0.1:9090)..."
+                       : "Aguardando download local...";
     if (mode == InstallMode::LocalStorageEx) {
         p.path = root + "/downloads/" + std::to_string(p.id) + "/package.pkg";
     }
@@ -236,7 +241,9 @@ int PackageInstaller::enqueueHomebrew(const Game& g, InstallMode mode, std::stri
     ++version;
     outMessage = mode == InstallMode::RemoteBgft
                      ? "Adicionado! Iniciando instalação em background nas Notificações do PS4..."
-                     : "Adicionado à fila de download local.";
+                     : mode == InstallMode::BinLoaderElf
+                           ? "Gerando payload .ELF e enviando para BinLoader (127.0.0.1:9090)..."
+                           : "Adicionado à fila de download local.";
     pthread_cond_broadcast(&changed);
     pthread_mutex_unlock(&mutex);
     return p.id;
@@ -428,7 +435,9 @@ void PackageInstaller::loop() {
             if (t.state == InstallState::Queued) {
                 nextJobId = t.id;
                 t.state = t.mode == InstallMode::LocalStorageEx ? InstallState::Downloading : InstallState::Registering;
-                t.note = t.mode == InstallMode::LocalStorageEx ? "Baixando pacote PKG..." : "Preparando tarefa em Notificações...";
+                t.note = t.mode == InstallMode::LocalStorageEx ? "Baixando pacote PKG..."
+                       : t.mode == InstallMode::BinLoaderElf   ? "Gerando ELF para BinLoader (127.0.0.1:9090)..."
+                                                               : "Preparando tarefa em Notificações...";
                 job = t;
                 saveLocked();
                 ++version;
@@ -484,8 +493,8 @@ void PackageInstaller::loop() {
                 job.url = pieces[0].url;
             }
 
-            if (ok && job.mode == InstallMode::RemoteBgft) {
-                // Garante Content ID e tamanho real do cabeçalho PKG antes de enviar ao BGFT
+            if (ok && (job.mode == InstallMode::RemoteBgft || job.mode == InstallMode::BinLoaderElf)) {
+                // Garante Content ID e tamanho real do cabeçalho PKG antes de enviar ao BGFT/BinLoader
                 if ((!validPkgContentId(job.contentId) || job.bytes == 0) && backend.fetchPkgHeader) {
                     std::string header;
                     if (backend.fetchPkgHeader(job.url, header, error)) {
@@ -539,20 +548,32 @@ void PackageInstaller::loop() {
                 }
                 if (ok) {
                     if (pieces.size() > 1 && !manifestUrl.empty()) {
-                        job.url = manifestUrl;
-                        if (job.bytes == 0 && manifestSizeTotal > 0) job.bytes = manifestSizeTotal;
-                        if (backend.registerStoreTask) {
-                            ok = backend.registerStoreTask(job, job.taskId, error) && job.taskId >= 0;
-                            if (!ok && error.find("proxy") == std::string::npos) {
-                                error += " — Ative 'Fazer proxy pelo painel' no painel web ou use L3 (Local)";
-                            }
-                        } else {
-                            error = "Manifesto dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
+                        if (job.mode == InstallMode::BinLoaderElf) {
+                            error = "Manifesto dividido requer 'Fazer proxy pelo painel' ou instalação local (L3)";
                             ok = false;
+                        } else {
+                            job.url = manifestUrl;
+                            if (job.bytes == 0 && manifestSizeTotal > 0) job.bytes = manifestSizeTotal;
+                            if (backend.registerStoreTask) {
+                                ok = backend.registerStoreTask(job, job.taskId, error) && job.taskId >= 0;
+                                if (!ok && error.find("proxy") == std::string::npos) {
+                                    error += " — Ative 'Fazer proxy pelo painel' no painel web ou use L3 (Local)";
+                                }
+                            } else {
+                                error = "Manifesto dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
+                                ok = false;
+                            }
                         }
                     } else if (pieces.size() > 1) {
                         error = "Pacote dividido requer 'Fazer proxy pelo painel' no painel web ou instalação local (L3)";
                         ok = false;
+                    } else if (job.mode == InstallMode::BinLoaderElf) {
+                        if (backend.sendBinLoaderElf) {
+                            ok = backend.sendBinLoaderElf(job, error);
+                        } else {
+                            error = "Envio BinLoader ELF indisponível";
+                            ok = false;
+                        }
                     } else {
                         ok = backend.registerRemoteTask && backend.registerRemoteTask(job, job.taskId, error) && job.taskId >= 0;
                     }
@@ -628,27 +649,48 @@ void PackageInstaller::loop() {
                     t->contentType = job.contentType;
                     t->contentFlags = job.contentFlags;
                     t->patch = job.patch;
-                    t->state = InstallState::Registered;
-                    t->note = "Registrado no PS4; iniciando...";
+                    if (job.mode == InstallMode::BinLoaderElf) {
+                        t->state = InstallState::Complete;
+                        t->percent = 100;
+                        t->note = "ELF enviado para BinLoader (127.0.0.1:9090)";
+                    } else {
+                        t->state = InstallState::Registered;
+                        t->note = "Registrado no PS4; iniciando...";
+                    }
                     saveLocked();
                     ++version;
                 }
                 pthread_mutex_unlock(&mutex);
 
-                ok = backend.startTask && backend.startTask(job.taskId, error);
+                if (job.mode != InstallMode::BinLoaderElf) {
+                    ok = backend.startTask && backend.startTask(job.taskId, error);
+                }
             }
 
             pthread_mutex_lock(&mutex);
             if (auto* t = findLocked(nextJobId)) {
                 if (ok) {
-                    t->state = InstallState::Installing;
-                    t->note = "Baixando em Notificações do PS4";
-                    std::string toast = "WILLGAME Store: " + t->name + " adicionado às Notificações";
-                    setNoticeLocked(t->name + ": adicionado às Notificações do PS4!");
-                    if (backend.notifySystem) {
-                        pthread_mutex_unlock(&mutex);
-                        backend.notifySystem(toast);
-                        pthread_mutex_lock(&mutex);
+                    if (job.mode == InstallMode::BinLoaderElf) {
+                        t->state = InstallState::Complete;
+                        t->percent = 100;
+                        t->note = "ELF enviado para BinLoader (127.0.0.1:9090)";
+                        std::string toast = "WILLGAME Store: " + t->name + " enviado via BinLoader (.ELF)";
+                        setNoticeLocked(t->name + ": ELF enviado para BinLoader (127.0.0.1:9090)!");
+                        if (backend.notifySystem) {
+                            pthread_mutex_unlock(&mutex);
+                            backend.notifySystem(toast);
+                            pthread_mutex_lock(&mutex);
+                        }
+                    } else {
+                        t->state = InstallState::Installing;
+                        t->note = "Baixando em Notificações do PS4";
+                        std::string toast = "WILLGAME Store: " + t->name + " adicionado às Notificações";
+                        setNoticeLocked(t->name + ": adicionado às Notificações do PS4!");
+                        if (backend.notifySystem) {
+                            pthread_mutex_unlock(&mutex);
+                            backend.notifySystem(toast);
+                            pthread_mutex_lock(&mutex);
+                        }
                     }
                 } else {
                     if (t->state != InstallState::Paused) {

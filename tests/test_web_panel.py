@@ -1,6 +1,7 @@
 """Testes do Painel Web de Gerenciamento e API de Sincronização PS4."""
 import http.client
 import json
+import socket
 import struct
 import sys
 import tempfile
@@ -536,6 +537,80 @@ class WebPanelTests(unittest.TestCase):
             status, _, whole = self.request("GET", f"/api/pkg/{item_id}.pkg")
             self.assertEqual(status, 200)
             self.assertEqual(whole, blob)
+
+    def test_07_binloader_elf_and_send(self):
+        # Cria template ELF sintético com a assinatura WILL_BGFT_CFG_1\x00
+        cfg_size = 16 + 8 + 1024 + 256 + 64 + 512 + 16
+        tpl = bytearray(b"\x7fELF" + b"\x00" * 124)
+        tpl.extend(b"WILL_BGFT_CFG_1\x00" + b"\x00" * (cfg_size - 16))
+        tpl.extend(b"\x00" * 64)
+        tpl_path = Path(self.tmp.name) / "bgft_template.elf"
+        tpl_path.write_bytes(bytes(tpl))
+        self.srv.binloader_template_path = tpl_path
+
+        status, _, data = self.request("POST", "/api/admin/homebrews", {
+            "title": "App BinLoader ELF",
+            "pkg_url": "https://cdn.example.org/app-binloader.pkg",
+            "content_id": "IV0000-WGST00077_00-BINLOADERELF0001",
+            "size_bytes": 123456789,
+            "content_type": 26,
+            "proxy_pkg": False,
+        })
+        self.assertEqual(status, 201)
+        item_id = json.loads(data)["item"]["id"]
+
+        # Download do .elf gerado
+        status, hdrs, elf_bytes = self.request("GET", f"/api/pkg/{item_id}.elf")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(elf_bytes), len(tpl))
+        self.assertTrue(elf_bytes.startswith(b"\x7fELF"))
+        pos = elf_bytes.find(b"WILL_BGFT_CFG_1\x00")
+        self.assertGreater(pos, 0)
+        self.assertEqual(struct.unpack_from("<Q", elf_bytes, pos + 16)[0], 123456789)
+        self.assertEqual(elf_bytes[pos + 24 : pos + 24 + 1024].split(b"\x00", 1)[0], b"https://cdn.example.org/app-binloader.pkg")
+        self.assertEqual(elf_bytes[pos + 24 + 1024 : pos + 24 + 1024 + 64].split(b"\x00", 1)[0], b"App BinLoader ELF")
+
+        # Envio TCP para porta BinLoader local em 127.0.0.1
+        srv_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv_sock.bind(("127.0.0.1", 0))
+        srv_sock.listen(1)
+        bin_port = srv_sock.getsockname()[1]
+        self.addCleanup(srv_sock.close)
+
+        received = []
+
+        def accept_once():
+            conn, _ = srv_sock.accept()
+            with conn:
+                while True:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        break
+                    received.append(chunk)
+
+        th = threading.Thread(target=accept_once, daemon=True)
+        th.start()
+
+        status, _, send_res = self.request("POST", "/api/admin/send-binloader", {
+            "item_id": item_id,
+            "link_index": 0,
+            "ip": "127.0.0.1",
+            "port": bin_port,
+        })
+        th.join(timeout=3)
+        self.assertEqual(status, 200)
+        parsed = json.loads(send_res)
+        self.assertTrue(parsed["ok"])
+        self.assertEqual(parsed["bytes"], len(elf_bytes))
+        self.assertEqual(b"".join(received), elf_bytes)
+
+        # Rejeita IP externo público
+        status, _, _ = self.request("POST", "/api/admin/send-binloader", {
+            "item_id": item_id,
+            "ip": "8.8.8.8",
+            "port": 9090,
+        })
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

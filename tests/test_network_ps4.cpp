@@ -27,6 +27,29 @@ static void checkRoots() {
 extern "C" uint32_t sceSysmoduleLoadModuleInternal(enum OrbisSysModuleInternal) { return 0; }
 extern "C" int32_t sceNetInit() { return 0; }
 extern "C" int32_t sceNetCtlInit() { return 0; }
+static int tcpSentBytes = 0, tcpPortSeen = 0, tcpClosed = 0;
+extern "C" int nbNetSocket(const char*, int domain, int type, int) {
+    assert(domain == 2 && type == 1);
+    return 77;
+}
+extern "C" int nbNetConnect(int sock, const void* addr, uint32_t len) {
+    assert(sock == 77 && len == 16);
+    const unsigned char* b = static_cast<const unsigned char*>(addr);
+    assert(b[0] == 16 && b[1] == 2); // sin_len=16, AF_INET=2
+    tcpPortSeen = (int(b[2]) << 8) | int(b[3]);
+    assert(b[4] == 127 && b[5] == 0 && b[6] == 0 && b[7] == 1);
+    return 0;
+}
+extern "C" int nbNetSend(int sock, const void*, size_t len, int) {
+    assert(sock == 77);
+    tcpSentBytes += int(len);
+    return int(len);
+}
+extern "C" int nbNetClose(int sock) {
+    assert(sock == 77);
+    ++tcpClosed;
+    return 0;
+}
 extern "C" int32_t sceNetPoolCreate(const char*, int32_t, int32_t) { return 1; }
 extern "C" void sceNetPoolDestroy(int32_t id) { assert(id == 1); ++poolTermCalls; }
 extern "C" int32_t sceSslInit(size_t) { return 2; }
@@ -113,7 +136,10 @@ int main() {
     loadResult = 0;
     assert(portalNetworkInit());
     checkRoots();
+    std::string tcpErr;
+    assert(portalNetworkSendTcp("127.0.0.1", 9090, "ELFPAYLOAD", tcpErr));
+    assert(tcpPortSeen == 9090 && tcpSentBytes == 10 && tcpClosed == 1);
     resetNetwork();
-    std::cout << "HTTPS trust registration, LAN HTTP, Range fetch, certificate rejection and init retry passed.\n";
+    std::cout << "HTTPS trust registration, LAN HTTP, Range fetch, BinLoader TCP and init retry passed.\n";
     return 0;
 }
