@@ -4,7 +4,9 @@
 
 int main(int argc, char** argv) {
     UI ui("assets", "build");
-    Category c1{1, "Aplicativos", "apps"}, c2{2, "Emuladores", "emulators"};
+    Category c1, c2;
+    c1.id = 1; c1.name = "Aplicativos"; c1.slug = "apps";
+    c2.id = 2; c2.name = "Emuladores"; c2.slug = "emulators";
     ui.categories = {c1, c2};
     Game g;
     g.id = 1;

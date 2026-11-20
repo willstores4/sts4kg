@@ -257,7 +257,9 @@ struct Value {
 
 struct Parser {
     const std::string& src;
-    size_t pos = 0;
+    size_t pos;
+
+    explicit Parser(const std::string& s) : src(s), pos(0) {}
 
     void skipWs() {
         while (pos < src.size() && (src[pos] == ' ' || src[pos] == '\t' || src[pos] == '\n' || src[pos] == '\r')) {
@@ -414,7 +416,7 @@ struct Parser {
 };
 
 inline bool parse(const std::string& jsonText, Value& out) {
-    Parser p{jsonText, 0};
+    Parser p(jsonText);
     if (!p.parseValue(out)) return false;
     p.skipWs();
     return p.pos == jsonText.size();

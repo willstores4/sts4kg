@@ -451,7 +451,10 @@ void PackageInstaller::loop() {
             } else {
                 std::string dir = root + "/downloads/" + std::to_string(job.id);
                 mkdir(dir.c_str(), 0777);
-                DownloadCtx ctx{this, job.id, 0};
+                DownloadCtx ctx;
+                ctx.self = this;
+                ctx.id = job.id;
+                ctx.lastVersionBump = 0;
                 if (!backend.downloadPkgFile ||
                     !backend.downloadPkgFile(job.url, job.path, job.bytes, onDownloadProgress, onDownloadStop, &ctx, error)) {
                     ok = false;
