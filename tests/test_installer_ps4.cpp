@@ -4,7 +4,7 @@
 #include <iostream>
 
 static int initCalls = 0, registerRemoteCalls = 0, registerStorageCalls = 0, startCalls = 0, resumeCalls = 0, pauseCalls = 0, stopCalls = 0, initialCalls = 0, termCalls = 0, nativeCalls = 0;
-static int initResult = 0, registerResult = 0, taskId = 42, foregroundResult = 0, foregroundUser = 7, initialResult = 0, initialUser = 9, progressResult = 0, startResult = 0, resumeResult = 0;
+static int initResult = 0, registerResult = 0, taskId = 42, foregroundResult = 0, mockForegroundUser = 7, initialResult = 0, initialUser = 9, progressResult = 0, startResult = 0, resumeResult = 0;
 static uint32_t bgftModuleResult = 0;
 static int nativeResult = 101, nativeStartResult = 0;
 static std::string expectedType = "PS4GD", nativePath;
@@ -49,7 +49,7 @@ extern "C" uint32_t sceKernelLoadStartModule(const char* path, size_t, const voi
     return (uint32_t)nativeResult;
 }
 extern "C" int sceKernelDlsym(int, const char*, void**) { return -1; }
-extern "C" int32_t sceUserServiceGetForegroundUser(int32_t* user) { *user = foregroundUser; return foregroundResult; }
+extern "C" int32_t sceUserServiceGetForegroundUser(int32_t* user) { *user = mockForegroundUser; return foregroundResult; }
 extern "C" int32_t sceUserServiceGetInitialUser(int32_t* user) { ++initialCalls; *user = initialUser; return initialResult; }
 extern "C" int bgftInit(Init* p) {
     ++initCalls;
@@ -125,7 +125,7 @@ int main() {
     expectedUser = 9;
     assert(api.registerRemoteTask(pkg, id, error) && initialCalls == 1);
     foregroundResult = 0;
-    foregroundUser = 7;
+    mockForegroundUser = 7;
     expectedUser = 7;
 
     assert(api.startTask(42, error) && startCalls == 1);
