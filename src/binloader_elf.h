@@ -47,7 +47,7 @@ inline std::string binLoaderPackageType(uint32_t contentType, bool patch) {
 inline bool buildBinLoaderPayloadElf(const std::string& templateElf, const InstallPackage& pkg,
                                      std::string& outElf, std::string& error) {
     outElf.clear();
-    if (templateElf.size() < 64 || templateElf.compare(0, 4, "\x7fELF") != 0) {
+    if (templateElf.size() < 64 || templateElf.compare(0, 4, "\x7f" "ELF") != 0) {
         error = "Template ELF do BinLoader ausente ou inválido";
         return false;
     }
