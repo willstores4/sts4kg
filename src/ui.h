@@ -207,18 +207,8 @@ inline Bitmap loadBitmapRGBA(const std::string& p) {
     return b;
 }
 
-inline Bitmap loadGreenCase(const std::string& p) {
-    Bitmap b = loadBitmapRGBA(p);
-    for (size_t i = 0; i < b.a.size(); ++i) {
-        unsigned char* r = &b.p[i * 3];
-        if (r[2] > r[0] * 1.18f && r[2] > r[1] * 1.02f) {
-            int blue = r[2], green = r[1];
-            r[0] = (unsigned char)std::min(255, int(r[0] / 2 + blue / 32));
-            r[1] = (unsigned char)std::min(255, std::max(green, int(blue * .90f)));
-            r[2] = (unsigned char)std::min(255, green / 3 + blue / 5);
-        }
-    }
-    return b;
+inline Bitmap loadBlueCase(const std::string& p) {
+    return loadBitmapRGBA(p);
 }
 
 enum Action {
@@ -293,7 +283,7 @@ struct UI {
     UI(std::string b, std::string d)
         : c(b), base(b), data(d),
           logo(loadBitmapRGBA(base + "/brand/nullstore-bag.png")),
-          caseFrame(loadGreenCase(base + "/brand/ps4-case-frame.png")) {
+          caseFrame(loadBlueCase(base + "/brand/ps4-case-frame.png")) {
         serverUrl = readDefaultServerUrl(base, data);
         categories = loadCategories(readFile(data + "/categories.tsv"));
         games = loadCatalog(readFile(data + "/catalog.tsv"));
@@ -508,8 +498,8 @@ struct UI {
         const int artW = frameW * (1000 - 25) / 1024;
         const int artH = side * (1290 - 183) / 1325;
 
-        c.rounded(frameX - 2, y + 3, frameW + 4, side, 7, 0x020905);
-        c.rect(artX, artY, artW, artH, 0x07100d);
+        c.rounded(frameX - 2, y + 3, frameW + 4, side, 7, 0x02050a);
+        c.rect(artX, artY, artW, artH, 0x070c14);
 
         if (!b.p.empty()) {
             int trim = 0;
@@ -536,30 +526,30 @@ struct UI {
             int sy = trim + (std::max(1, b.h - trim) - sh) / 3;
             c.region(b, sx, sy, sw, sh, artX, artY, artW, artH);
         } else {
-            c.rect(artX, artY, artW, artH, 0x0c2118);
-            c.text("HOMEBREW", artX + 14, artY + 34, 15, 0x31b878, artW - 24);
-            c.lines(g.title, artX + 14, artY + 66, 19, 0xe7f3ed, artW - 28, 3);
+            c.rect(artX, artY, artW, artH, 0x0c1526);
+            c.text("HOMEBREW", artX + 14, artY + 34, 15, 0x318ee0, artW - 24);
+            c.lines(g.title, artX + 14, artY + 66, 19, 0xe7eff7, artW - 28, 3);
         }
 
         if (!caseFrame.p.empty()) {
             c.image(caseFrame, frameX, y, frameW, side);
         } else {
-            c.rounded(frameX, y, frameW, side, 8, 0x0b3020);
-            c.rounded(frameX + 2, y + 2, frameW - 4, side - 4, 6, 0x286443);
-            c.rect(frameX + 4, y + 4, frameW - 8, side * 12 / 100, 0x0c4b32);
-            c.text("HB", frameX + 13, y + 26, 18, 0xf5fff9, 60);
+            c.rounded(frameX, y, frameW, side, 8, 0x0b2850);
+            c.rounded(frameX + 2, y + 2, frameW - 4, side - 4, 6, 0x28569c);
+            c.rect(frameX + 4, y + 4, frameW - 8, side * 12 / 100, 0x0c3c78);
+            c.text("HB", frameX + 13, y + 26, 18, 0xf5f9ff, 60);
         }
     }
 
     void draw() {
-        const uint32_t bg = 0x06100d, panel = 0x0b1915, muted = 0xb2c2b9, white = 0xe7f3ed, cyan = 0x31b878, rule = 0x20372c;
+        const uint32_t bg = 0x060b12, panel = 0x0b121e, muted = 0xb2bec9, white = 0xe7eff7, cyan = 0x318ee0, rule = 0x202d42;
         const int dlTab = downloadsTab();
         c.rect(0, 0, 1920, 1080, bg);
 
         // Cabeçalho superior
-        c.rect(315, 0, 1605, 204, 0x081511);
-        c.rect(315, 203, 1605, 1, 0x1a2e25);
-        c.rect(315, 0, 2, 204, 0x0f281d);
+        c.rect(315, 0, 1605, 204, 0x080e18);
+        c.rect(315, 203, 1605, 1, 0x1a2638);
+        c.rect(315, 0, 2, 204, 0x0f1c30);
         c.rect(314, 0, 1, 989, rule);
 
         // Barra lateral (marca + categorias dinâmicas)
@@ -579,7 +569,7 @@ struct UI {
             int y = 205 + row * 52;
             bool active = (i == tab);
             if (active) {
-                c.rounded(22, y - 28, 270, 42, 6, 0x10241b);
+                c.rounded(22, y - 28, 270, 42, 6, 0x101c2d);
                 c.rect(22, y - 28, 3, 42, cyan);
             }
             std::string label = tabTitle(i);
@@ -607,7 +597,7 @@ struct UI {
         c.text(query.empty() ? "Loja WILLGAME PS4" : "Busca: " + query, 352, 124, 44, white, 1220);
 
         const char* sorts[] = {"Mais recentes", "Nome A-Z", "Menor tamanho", "Maior tamanho"};
-        c.rounded(1622, 25, 276, 42, 5, 0x0d2018);
+        c.rounded(1622, 25, 276, 42, 5, 0x0d1626);
         c.rect(1622, 25, 276, 1, rule);
         c.rect(1622, 66, 276, 1, rule);
         c.text("ORDEM  " + std::string(sorts[sort]), 1636, 52, 18, muted, 250);
@@ -664,7 +654,7 @@ struct UI {
                     const auto& t = tasks[i];
                     int y = 225 + (i - start) * 142;
                     bool active = (i == taskSelected);
-                    c.rect(352, y, 1500, 128, active ? 0x124833 : panel);
+                    c.rect(352, y, 1500, 128, active ? 0x12325c : panel);
                     if (active) c.rect(352, y, 5, 128, cyan);
 
                     c.text(t.name, 377, y + 34, 27, white, 1080);
@@ -675,7 +665,7 @@ struct UI {
 
                     double fraction = t.percent >= 0 ? std::min(1.0, double(t.percent) / 100.0)
                                                      : (t.bytes > 0 ? std::min(1.0, double(t.doneBytes) / t.bytes) : 0.0);
-                    c.rect(377, y + 52, 1050, 8, 0x050d0b);
+                    c.rect(377, y + 52, 1050, 8, 0x050912);
                     c.rect(377, y + 52, int(1050 * fraction), 8, cyan);
 
                     std::string stats = (t.contentId.empty() ? "PKG" : t.contentId) + "   •   " +
@@ -690,7 +680,7 @@ struct UI {
 
         // Rodapé com legenda do controle
         c.rect(0, 989, 1920, 91, bg);
-        c.rect(0, 989, 1920, 1, 0x334b42);
+        c.rect(0, 989, 1920, 1, 0x334157);
         if (tab != dlTab) {
             c.text("X  Detalhes", 352, 1032, 21, white);
             c.text("TRIÂNGULO  Buscar", 510, 1032, 21, white);
@@ -710,13 +700,13 @@ struct UI {
         // Modal de Detalhes
         if (detail && current()) {
             const auto& g = *current();
-            c.rect(285, 190, 1590, 790, 0x063b29);
+            c.rect(285, 190, 1590, 790, 0x06254a);
             c.rect(285, 190, 7, 790, cyan);
             const auto& b = cover(g);
             if (!b.p.empty()) {
                 c.image(b, 330, 235, 400, 520);
             } else {
-                c.rect(330, 235, 400, 520, 0x0b1915);
+                c.rect(330, 235, 400, 520, panel);
                 c.text("HOMEBREW PKG", 360, 290, 22, cyan);
                 c.lines(g.title, 360, 345, 28, white, 340, 4);
             }
@@ -745,7 +735,7 @@ struct UI {
 
         // Modal Configurar Servidor
         if (serverPicker) {
-            c.rect(365, 230, 1230, 640, 0x09291f);
+            c.rect(365, 230, 1230, 640, 0x091c34);
             c.rect(365, 230, 7, 640, cyan);
             c.text("Painel Web de Sincronização", 420, 295, 40, white);
             c.text("Servidor atual: " + serverUrl, 420, 348, 24, cyan, 1120);
@@ -758,7 +748,7 @@ struct UI {
             };
             for (int i = 0; i < 4; ++i) {
                 int y = 440 + i * 82;
-                c.rect(420, y, 1120, 64, i == serverChoice ? cyan : 0x124833);
+                c.rect(420, y, 1120, 64, i == serverChoice ? cyan : 0x12325c);
                 c.text(opts[i], 448, y + 43, 26, i == serverChoice ? bg : white, 1060);
             }
             c.text("X  Selecionar     CÍRCULO  Fechar", 420, 825, 24, muted);
@@ -766,17 +756,17 @@ struct UI {
 
         // Teclado Virtual Fallback (Busca ou URL)
         if (keyboard) {
-            c.rect(350, 205, 1260, 745, 0x09291f);
+            c.rect(350, 205, 1260, 745, 0x091c34);
             c.rect(350, 205, 7, 745, cyan);
             c.text(kbTarget == KbServer ? "Endereço do Painel Web" : "Buscar Homebrew", 400, 265, 38, white);
-            c.rect(400, 295, 1150, 62, 0x050d0b);
+            c.rect(400, 295, 1150, 62, 0x050912);
             c.text(kbBuffer + "_", 422, 338, 30, white, 1100);
 
             const char* keys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
             for (int i = 0; i < 45; ++i) {
                 int x = 400 + (i % 9) * 128;
                 int y = 390 + (i / 9) * 86;
-                c.rect(x, y, 114, 70, i == key ? cyan : 0x124833);
+                c.rect(x, y, 114, 70, i == key ? cyan : 0x12325c);
                 std::string label;
                 if (i < 41) label = std::string(1, keys[i]);
                 else if (i == 41) label = "Espaço";
@@ -789,7 +779,7 @@ struct UI {
         }
 
         if (!notice.empty()) {
-            c.rect(320, 922, 1550, 60, 0x144732);
+            c.rect(320, 922, 1550, 60, 0x143359);
             c.rect(320, 922, 5, 60, cyan);
             c.text(notice, 345, 962, 24, white, 1500);
         }
