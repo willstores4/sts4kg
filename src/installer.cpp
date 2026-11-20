@@ -611,7 +611,7 @@ void PackageInstaller::loop() {
                 if (ok) {
                     t->state = InstallState::Installing;
                     t->note = "Baixando em Notificações do PS4";
-                    std::string toast = "Homebrew Store: " + t->name + " adicionado às Notificações";
+                    std::string toast = "WILLGAME Store: " + t->name + " adicionado às Notificações";
                     setNoticeLocked(t->name + ": adicionado às Notificações do PS4!");
                     if (backend.notifySystem) {
                         pthread_mutex_unlock(&mutex);
