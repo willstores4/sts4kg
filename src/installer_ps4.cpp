@@ -36,10 +36,12 @@ extern "C" int bgftStop(int) __asm__("sceBgftServiceDownloadStopTask");
 extern "C" int bgftProgress(int, Progress*) __asm__("sceBgftServiceDownloadGetProgress");
 
 static bool bgftReady = false, moduleReady = false, cleanupRegistered = false;
-static bool appInstReady = false;
 static void* heap = nullptr;
 static std::map<int, int> progressReports;
+#ifndef PORTAL_HOST
+static bool appInstReady = false;
 static int (*sysNotifyFn)(int, const char*) = nullptr;
+#endif
 
 static std::string apiError(const char* what, int code) {
     installLog("%s: 0x%08X", what, (unsigned)code);
@@ -132,6 +134,7 @@ static bool loadModule(OrbisSysModuleInternal id, const char* name, const char* 
     return loadNativeModuleHandle(name, path, handle, error);
 }
 
+#ifndef PORTAL_HOST
 static void initOptionalHelpers() {
     if (!appInstReady) {
         std::string ignore;
@@ -156,6 +159,7 @@ static void initOptionalHelpers() {
         }
     }
 }
+#endif
 
 static void notifySystem(const std::string& msg) {
 #ifndef PORTAL_HOST
