@@ -59,6 +59,10 @@ eboot.bin: build/hbstore.elf tools/installer-auth.hex Makefile
 sce_sys/param.sfo: tools/package.py
 	python3 tools/package.py sfo
 
+assets/server.txt:
+	@mkdir -p assets
+	printf 'http://192.168.1.2:8765\n' > $@
+
 pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/server.txt assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
 	python3 tools/package.py gp4
 
@@ -95,7 +99,6 @@ build/test_text_input: tests/test_text_input.cpp src/text_input_ps4.cpp src/text
 	$(HOST_CXX) -DPORTAL_HOST -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -o $@
 
 test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_installer build/test_installer_ps4 build/test_installer_progress build/test_installer_retry build/test_startup_ps4 build/test_text_input
-	python3 -m unittest tests/test_web_panel.py -v
 	./build/test_catalog
 	./build/test_network_ps4
 	./build/test_file_info
@@ -105,6 +108,7 @@ test: build/test_catalog build/test_network_ps4 build/test_file_info build/test_
 	./build/test_installer_retry
 	./build/test_startup_ps4
 	./build/test_text_input
+	python3 -m unittest tests/test_web_panel.py -v
 
 clean:
 	rm -rf build eboot.bin pkg.gp4 sce_sys/param.sfo
