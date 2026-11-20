@@ -452,6 +452,14 @@ struct UI {
                 detailLink = (detailLink + 1) % totalChoices;
                 return;
             }
+            if (nLinks > 1 && a == PAGE_PREV) {
+                detailLink = std::max(0, detailLink - 4);
+                return;
+            }
+            if (nLinks > 1 && a == PAGE_NEXT) {
+                detailLink = std::min(totalChoices - 1, detailLink + 4);
+                return;
+            }
             if ((a == CONFIRM || a == LOCAL_INSTALL) && cur) {
                 installBatch.clear();
                 if (nLinks > 1 && detailLink == nLinks) {
@@ -754,39 +762,60 @@ struct UI {
             c.text(subInfo, 780, 435, 23, muted, 1020);
 
             if (!g.description.empty()) {
-                c.lines(g.description, 780, 485, 22, white, 1020, nLinks > 1 ? 2 : 4);
+                c.lines(g.description, 780, 480, 22, white, 1020, nLinks > 1 ? 2 : 4);
             }
 
             if (nLinks > 1) {
-                c.text("PACOTES DISPONÍVEIS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo para escolher",
-                       780, 548, 18, cyan, 1020);
-                int maxRows = 3;
-                int rowStart = totalChoices > maxRows ? std::max(0, std::min(selLink - 1, totalChoices - maxRows)) : 0;
-                for (int r = 0; r < std::min(maxRows, totalChoices); ++r) {
+                int maxBtns = 4;
+                bool hasScroll = totalChoices > maxBtns;
+                int rowStart = hasScroll ? std::max(0, std::min(selLink - 1, totalChoices - maxBtns)) : 0;
+                std::string hintHdr = hasScroll
+                    ? ("LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo ou L2/R2 para rolar, X para instalar:")
+                    : ("SELECIONE O LINK (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo e X para instalar:");
+                c.text(hintHdr, 780, 540, 18, cyan, 1020);
+                int btnW = hasScroll ? 996 : 1020;
+                for (int r = 0; r < std::min(maxBtns, totalChoices); ++r) {
                     int idx = rowStart + r;
-                    int ry = 562 + r * 42;
-                    bool activeRow = (idx == selLink);
-                    c.rect(780, ry, 1020, 36, activeRow ? cyan : 0x0b192b);
-                    std::string rLabel = idx == nLinks
-                        ? "[+] Instalar TODOS (" + std::to_string(nLinks) + " arquivos na fila)"
+                    int by = 556 + r * 60;
+                    bool activeBtn = (idx == selLink);
+                    c.rect(780, by, btnW, 50, activeBtn ? cyan : 0x12325c);
+                    if (!activeBtn) c.rect(780, by, 5, 50, cyan);
+                    std::string bName = idx == nLinks
+                        ? "Instalar TODOS (" + std::to_string(nLinks) + " links na fila)"
                         : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
-                    c.text(rLabel, 796, ry + 25, 20, activeRow ? bg : white, 820);
+                    std::string bText = (activeBtn ? "X  " : "   ") + bName;
+                    c.text(bText, 800, by + 33, 24, activeBtn ? bg : white, hasScroll ? 800 : 825);
                     if (idx < nLinks && !g.links[idx].size.empty()) {
-                        c.text(g.links[idx].size, 1630, ry + 25, 18, activeRow ? bg : muted, 155);
+                        c.text(g.links[idx].size, hasScroll ? 1612 : 1635, by + 32, 19, activeBtn ? bg : muted, 150);
                     }
                 }
+                if (hasScroll) {
+                    const int sbX = 1790, sbY = 556, sbW = 10, sbH = 230;
+                    c.rect(sbX, sbY, sbW, sbH, 0x081322);
+                    int thumbH = std::max(28, sbH * maxBtns / totalChoices);
+                    int maxOffset = std::max(1, totalChoices - maxBtns);
+                    int thumbY = sbY + (sbH - thumbH) * rowStart / maxOffset;
+                    c.rect(sbX, thumbY, sbW, thumbH, cyan);
+                    if (rowStart > 0) {
+                        for (int k = 0; k < 5; ++k) c.rect(sbX + 4 - k, sbY - 12 + k, k * 2 + 2, 1, cyan);
+                    }
+                    if (rowStart + maxBtns < totalChoices) {
+                        for (int k = 0; k < 5; ++k) c.rect(sbX + 4 - k, sbY + sbH + 10 - k, k * 2 + 2, 1, cyan);
+                    }
+                }
+                c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
+                       780, 816, 20, cyan, 1000);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 780, 850, 22, white, 1020);
+                c.lines(isAll ? g.url : shown.url, 780, 892, 19, muted, 1020, 2);
+            } else {
+                c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
+                       780, 645, 22, cyan, 1000);
+                c.rect(780, 675, 1020, 66, cyan);
+                c.text("X  Instalar em Background (Notificações PS4)", 806, 720, 30, bg, 970);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 780, 780, 24, white, 1020);
+                c.text("CÍRCULO  Voltar ao catálogo", 780, 822, 22, muted);
+                c.lines(shown.url, 780, 868, 20, muted, 1020, 2);
             }
-
-            c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
-                   780, 712, 21, cyan, 1000);
-            c.rect(780, 730, 1020, 62, cyan);
-            std::string btnTxt = isAll
-                ? "X  Enfileirar TODOS em Notificações PS4"
-                : "X  Instalar em Background (Notificações PS4)";
-            c.text(btnTxt, 806, 772, 28, bg, 970);
-            c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 780, 828, 23, white, 1020);
-            c.text("CÍRCULO  Voltar ao catálogo", 780, 864, 21, muted);
-            c.lines(isAll ? g.url : shown.url, 780, 904, 19, muted, 1020, 2);
         }
 
         // Modal Configurar Servidor

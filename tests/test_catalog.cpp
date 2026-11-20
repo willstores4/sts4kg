@@ -198,6 +198,44 @@ int main() {
     ui.draw();
     ui.action(BACK);
 
+    // PKG dividido mantém um único botão (sem lista de links separados)
+    ui.selected = (ui.games[ui.visible[0]].id == 21) ? 0 : 1;
+    ui.action(CONFIRM);
+    assert(ui.detail && ui.detailLink == 0);
+    ui.action(DOWN);
+    assert(ui.detailLink == 0);
+    ui.draw();
+    ui.action(BACK);
+
+    // Muitos links (rolagem para cima/baixo + PAGE_NEXT/PAGE_PREV)
+    Game gMany = multiRound[0];
+    gMany.id = 22;
+    gMany.links.clear();
+    for (int i = 0; i < 10; ++i) {
+        GameLink lk;
+        lk.label = "DLC " + std::to_string(i + 1);
+        lk.url = "http://192.168.1.2:8765/pkgs/dlc" + std::to_string(i + 1) + ".pkg";
+        lk.size = "10 MB";
+        gMany.links.push_back(lk);
+    }
+    ui.games = {gMany};
+    ui.filter();
+    ui.selected = 0;
+    ui.action(CONFIRM);
+    assert(ui.detail && ui.detailLink == 0);
+    ui.action(PAGE_NEXT);
+    assert(ui.detailLink == 4);
+    ui.draw();
+    ui.action(PAGE_NEXT);
+    assert(ui.detailLink == 8);
+    ui.draw();
+    ui.action(PAGE_PREV);
+    assert(ui.detailLink == 4);
+    ui.action(UP);
+    assert(ui.detailLink == 3);
+    ui.draw();
+    ui.action(BACK);
+
     unlink("build/test-data/favorites.txt");
     rmdir("build/test-data");
     std::cout << "Catalog JSON parser, round-trip, categories, search, install actions and UI rendering passed.\n";
