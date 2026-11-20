@@ -132,13 +132,13 @@ inline bool isHttpUrl(const std::string& url) {
     if (!p) return false;
     auto end = url.find_first_of("/?#", p);
     auto host = url.substr(p, end - p);
-    return !host.empty() && host.find('@') == std::string::npos;
+    return !host.empty() && host[0] != ':' && host != "." && host != ".." && host.find('@') == std::string::npos;
 }
 
 inline std::string normalizeServerUrl(std::string raw) {
     raw = trimStr(raw);
     if (raw.empty()) return "";
-    if (raw.compare(0, 7, "http://") != 0 && raw.compare(0, 8, "https://") != 0) {
+    if (raw.find("://") == std::string::npos) {
         raw = "http://" + raw;
     }
     while (raw.size() > 8 && raw.back() == '/') raw.pop_back();
