@@ -80,7 +80,7 @@ build/test_catalog: tests/test_catalog.cpp src/ui.h src/catalog.h src/installer.
 build/test_network_ps4: tests/test_network_ps4.cpp src/network_ps4.cpp src/network_ps4.h build/trusted_roots.h
 	$(HOST_CXX) -std=c++11 -O1 -g -fsanitize=address,undefined -idirafter $(OO_PS4_TOOLCHAIN)/include $< -lpthread -o $@
 build/test_file_info: tests/test_file_info.c src/path_info.h
-	$(HOST_CC) -std=c11 -O1 -g -fsanitize=address,undefined $< -o $@
+	$(HOST_CC) -D_POSIX_C_SOURCE=200809L -std=c11 -O1 -g -fsanitize=address,undefined $< -o $@
 build/test_installer: tests/test_installer.cpp src/installer.cpp src/installer.h src/queue_store.h src/path_info.h src/install_log.h src/bgft_abi.h
 	$(HOST_CXX) -DPORTAL_HOST -std=c++11 -O1 -g -fsanitize=address,undefined tests/test_installer.cpp src/installer.cpp -lpthread -o $@
 build/test_installer_ps4: tests/test_installer_ps4.cpp src/installer_ps4.cpp src/installer.h src/bgft_abi.h src/install_log.h
