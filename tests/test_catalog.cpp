@@ -22,6 +22,11 @@ int main() {
                                  "http://192.168.1.2/hb", resolvedPkg, manifestCid, manifestSize, mErr));
     assert(resolvedPkg == "http://192.168.1.2/hb/files/app.pkg" && manifestSize == 4096);
 
+    manifestSize = 0;
+    assert(extractPkgUrlFromJson(R"({"originalFileSize":63766528,"numberOfSplitFiles":1,"pieces":[{"url":"https://example.org/hb.pkg","fileOffset":0,"fileSize":63766528}]})",
+                                 "http://192.168.1.2", resolvedPkg, manifestCid, manifestSize, mErr));
+    assert(resolvedPkg == "https://example.org/hb.pkg" && manifestSize == 63766528);
+
     CatalogData arrayCat;
     assert(parseCatalogJson(R"([{"name":"Porte HB","url":"/p.pkg","cover":"/c.jpg","genre":"Jogos Homebrew"}])",
                             "http://192.168.1.2", arrayCat, mErr));

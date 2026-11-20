@@ -169,10 +169,14 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 201)
         pkg_url = f"http://127.0.0.1:{self.port}" + json.loads(data)["pkg_url"]
 
-        # Mini servidor HTTP servindo um manifesto .json apontando para o .pkg acima
+        # Mini servidor HTTP servindo um manifesto .manifest.json com formato "pieces" apontando para o .pkg acima
         class ManifestHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                payload = json.dumps({"url": pkg_url}).encode("utf-8")
+                payload = json.dumps({
+                    "originalFileSize": 8192,
+                    "numberOfSplitFiles": 1,
+                    "pieces": [{"url": pkg_url, "fileOffset": 0, "fileSize": 8192}],
+                }).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
@@ -186,7 +190,7 @@ class WebPanelTests(unittest.TestCase):
         threading.Thread(target=manifest_srv.serve_forever, daemon=True).start()
         self.addCleanup(manifest_srv.server_close)
         self.addCleanup(manifest_srv.shutdown)
-        manifest_url = f"http://127.0.0.1:{manifest_srv.server_port}/app.json"
+        manifest_url = f"http://127.0.0.1:{manifest_srv.server_port}/hb.manifest.json"
 
         # Inspecionar URL .json pelo painel
         status, _, data = self.request("POST", "/api/admin/inspect-pkg", {"pkg_url": manifest_url})

@@ -475,14 +475,21 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
 
     std::string rawUrl = firstJsonString(*obj, {"pkg_url", "pkgUrl", "url", "pkg", "package", "download_url", "link"});
     if (rawUrl.empty()) {
-        for (const char* arrKey : {"packages", "items", "assets"}) {
+        for (const char* arrKey : {"pieces", "packages", "items", "assets"}) {
             if (auto* arr = obj->get(arrKey)) {
                 if (arr->type == MiniJson::Value::Array) {
+                    if (std::string(arrKey) == "pieces" && arr->arrVal.size() > 1) {
+                        error = "Manifesto dividido em múltiplas partes não suportado; use PKG único";
+                        return false;
+                    }
                     for (const auto& entry : arr->arrVal) {
                         if (entry.type != MiniJson::Value::Object) continue;
                         std::string candidate = firstJsonString(entry, {"pkg_url", "pkgUrl", "url", "browser_download_url", "download_url"});
                         if (!candidate.empty()) {
                             rawUrl = candidate;
+                            if (auto* fs = entry.get("fileSize")) {
+                                if (outSizeBytes == 0 && fs->asUInt() > 0) outSizeBytes = fs->asUInt();
+                            }
                             if (lower(candidate).find(".pkg") != std::string::npos) break;
                         }
                     }
@@ -508,6 +515,8 @@ inline bool extractPkgUrlFromJson(const std::string& jsonText, const std::string
     if (validPkgContentId(cid)) outContentId = cid;
     if (auto* sz = obj->get("size_bytes")) {
         if (sz->asUInt() > 0) outSizeBytes = sz->asUInt();
+    } else if (auto* szOrig = obj->get("originalFileSize")) {
+        if (szOrig->asUInt() > 0) outSizeBytes = szOrig->asUInt();
     } else if (auto* sz2 = obj->get("size")) {
         if (sz2->type == MiniJson::Value::Number && sz2->asUInt() > 0) outSizeBytes = sz2->asUInt();
     }
