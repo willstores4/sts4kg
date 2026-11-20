@@ -1,4 +1,4 @@
-# Homebrew Store PS4 + Painel Web de Gerenciamento
+# WILLGAME Store PS4 + Painel Web de Gerenciamento
 
 Loja de homebrews para PS4 com **Painel Web de gerenciamento** integrado e instalação em background diretamente nas **Notificações do PS4** (via API nativa BGFT).
 

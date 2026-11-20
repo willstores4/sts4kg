@@ -60,7 +60,7 @@ def verify(extract_root):
     # PkgTool.Core pkg_extract extracts uroot only; PARAM_SFO and ICON0_PNG digests
     # are already verified by pkg_validate above. Check the packaged SFO metadata too.
     sfo = (ROOT / "sce_sys/param.sfo").read_bytes()
-    if sfo[:4] != b"\x00PSF" or b"HBST00001\0" not in sfo:
+    if sfo[:4] != b"\x00PSF" or b"WGST00001\0" not in sfo:
         raise RuntimeError("Invalid sce_sys/param.sfo")
 
     verify_installer_self((uroot / "eboot.bin").read_bytes())

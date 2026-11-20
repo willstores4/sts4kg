@@ -21,7 +21,7 @@ PKGTOOL ?= $(OO_PS4_TOOLCHAIN)/bin/$(OO_HOST)/PkgTool.Core
 export PKGTOOL
 $(shell mkdir -p build)
 
-CONTENT_ID := IV0000-HBST00001_00-HBSTORE000000000
+CONTENT_ID := IV0000-WGST00001_00-HBSTORE000000000
 # Installer permissions used by flatz/ps4_remote_pkg_installer (Makefile AUTH_INFO).
 INSTALLER_AUTH_INFO := $(shell cat tools/installer-auth.hex)
 CFLAGS := --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -mstackrealign -MMD -MP -D_POSIX_C_SOURCE=200809L -O2 -std=c++11 -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers -isysroot $(OO_PS4_TOOLCHAIN) -isystem $(OO_PS4_TOOLCHAIN)/include -isystem $(OO_PS4_TOOLCHAIN)/include/c++/v1

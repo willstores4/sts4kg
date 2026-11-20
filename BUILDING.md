@@ -1,4 +1,4 @@
-# Building Homebrew Store PS4
+# Building WILLGAME Store PS4
 
 ## GitHub Actions (Linux)
 
@@ -6,7 +6,7 @@
 - Installs `clang-18`, `lld-18`, `python3`, `python3-pil`, `make`, and `libssl1.1` (required by .NET Core 3.1 `PkgTool.Core`).
 - Downloads the OpenOrbis PS4 Toolchain (`v0.5.4`, `toolchain-llvm-18.tar.gz`) and copies `libc.prx` / `libSceFios2.prx`.
 - Runs `make test` (Web Panel Python tests + C++ host tests).
-- Builds `build/IV0000-HBST00001_00-HBSTORE000000000.pkg` and validates it with `PkgTool.Core pkg_validate` and `tools/verify_package.py`.
+- Builds `build/IV0000-WGST00001_00-HBSTORE000000000.pkg` and validates it with `PkgTool.Core pkg_validate` and `tools/verify_package.py`.
 - Uploads the PKG as a workflow artifact, or publishes a GitHub Release when pushing a `v*` tag.
 
 ## Local Build (Linux / macOS)
