@@ -35,7 +35,7 @@ struct Game {
 };
 
 struct CatalogData {
-    std::string storeName = "Homebrew Store";
+    std::string storeName = "WILLGAME Store";
     std::string storeSubtitle = "Catálogo Homebrew PS4";
     long long updatedAt = 0;
     std::vector<Category> categories;
