@@ -773,6 +773,9 @@ struct UI {
                 std::string hintHdr = hasScroll
                     ? ("LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo ou L2/R2 para rolar, X para instalar:")
                     : ("SELECIONE O LINK (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo e X para instalar:");
+                if (!isAll && shown.useBinloader) {
+                    hintHdr = "LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  X envia Payload ELF (127.0.0.1:9090):";
+                }
                 c.text(hintHdr, 810, 540, 18, cyan, 1042);
                 int btnW = hasScroll ? 1018 : 1042;
                 for (int r = 0; r < std::min(maxBtns, totalChoices); ++r) {
@@ -784,6 +787,7 @@ struct UI {
                     std::string bName = idx == nLinks
                         ? "Instalar TODOS (" + std::to_string(nLinks) + " links na fila)"
                         : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
+                    if (idx < nLinks && g.links[idx].useBinloader) bName += "  [ELF]";
                     std::string bText = (activeBtn ? "X  " : "   ") + bName;
                     c.text(bText, 830, by + 33, 24, activeBtn ? bg : white, hasScroll ? 812 : 836);
                     if (idx < nLinks && !g.links[idx].size.empty()) {
@@ -806,15 +810,18 @@ struct UI {
                 }
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 816, 20, cyan, 1020);
-                c.text("L3  Local (App)     TRIÂNGULO  BinLoader ELF (127.0.0.1:9090)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 20, white, 1042);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 22, white, 1042);
                 c.lines(isAll ? g.url : shown.url, 810, 892, 19, muted, 1042, 2);
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
                 c.rect(810, 675, 1042, 66, cyan);
-                c.text("X  Instalar em Background (Notificações PS4)", 836, 720, 30, bg, 990);
-                c.text("L3  Baixar no App + Instalar (Local)     TRIÂNGULO  BinLoader ELF (127.0.0.1:9090)", 810, 780, 22, white, 1042);
-                c.text("R3  Ver Notificações     CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted, 1042);
+                c.text(shown.useBinloader
+                           ? "X  Enviar via Payload ELF (BinLoader 127.0.0.1:9090)"
+                           : "X  Instalar em Background (Notificações PS4)",
+                       836, 720, 30, bg, 990);
+                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 810, 780, 24, white, 1042);
+                c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }

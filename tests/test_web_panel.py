@@ -379,6 +379,7 @@ class WebPanelTests(unittest.TestCase):
                 "size_bytes": 4096,
                 "content_type": 27,
                 "proxy_pkg": True,
+                "use_binloader": True,
             }],
         })
         self.assertEqual(status, 201)
@@ -392,6 +393,8 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(len(opt_exported["links"]), 2)
         self.assertEqual(opt_exported["links"][0]["label"], "Base v1.0")
         self.assertEqual(opt_exported["links"][1]["label"], "Update v1.1")
+        self.assertFalse(opt_exported["links"][0]["use_binloader"])
+        self.assertTrue(opt_exported["links"][1]["use_binloader"])
         link1_path = urllib.parse.urlparse(opt_exported["links"][1]["url"])
         status, _, upd_bytes = self.request("GET", f"{link1_path.path}?{link1_path.query}")
         self.assertEqual(status, 200)
@@ -448,6 +451,7 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(len(imported_matches), 2)
         self.assertEqual(len(imported_matches[0]["extra_links"]), 1)
         self.assertEqual(imported_matches[0]["extra_links"][0]["label"], "Update v1.1")
+        self.assertTrue(imported_matches[0]["extra_links"][0]["use_binloader"])
 
     def test_06_proxy_head_and_ua_fallback(self):
         pkg_bytes = bytearray(make_fake_pkg(content_id="IV0000-WGST00099_00-PROXYTEST0000001", total_size=8192))

@@ -161,9 +161,10 @@ int main() {
                 "pkg_url": "/pkgs/base.pkg",
                 "size_bytes": 4096,
                 "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04",
+                "use_binloader": true,
                 "links": [
-                    {"label": "Base", "url": "/pkgs/base.pkg", "size": "4 KB", "size_bytes": 4096, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04"},
-                    {"label": "Update v1.05", "url": "/pkgs/update.pkg", "size": "2 KB", "size_bytes": 2048, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "content_type": 27}
+                    {"label": "Base", "url": "/pkgs/base.pkg", "size": "4 KB", "size_bytes": 4096, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "use_binloader": false},
+                    {"label": "Update v1.05", "url": "/pkgs/update.pkg", "size": "2 KB", "size_bytes": 2048, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "content_type": 27, "use_binloader": true}
                 ]
             },
             {
@@ -181,7 +182,9 @@ int main() {
 
     auto multiRound = loadCatalog(serialize(multiCat.items));
     assert(multiRound.size() == 2);
-    assert(multiRound[0].links.size() == 2 && multiRound[0].links[1].label == "Update v1.05");
+    assert(multiRound[0].useBinloader);
+    assert(!multiRound[0].links[0].useBinloader);
+    assert(multiRound[0].links.size() == 2 && multiRound[0].links[1].label == "Update v1.05" && multiRound[0].links[1].useBinloader);
     assert(multiRound[1].splitUrls.size() == 2);
 
     ui.tab = 0;
@@ -193,7 +196,7 @@ int main() {
     ui.action(DOWN); // seleciona Update v1.05
     assert(ui.detailLink == 1);
     ui.action(CONFIRM);
-    assert(ui.installBgRequest && ui.installItem.url == "http://192.168.1.2:8765/pkgs/update.pkg");
+    assert(ui.installBgRequest && ui.installItem.url == "http://192.168.1.2:8765/pkgs/update.pkg" && ui.installItem.useBinloader);
     ui.installBgRequest = false;
     ui.action(DOWN); // seleciona "Instalar TODOS"
     assert(ui.detailLink == 2);

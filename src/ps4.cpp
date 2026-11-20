@@ -233,6 +233,7 @@ int main() {
                 {ORBIS_PAD_BUTTON_RIGHT, RIGHT},
                 {ORBIS_PAD_BUTTON_CROSS, CONFIRM},
                 {ORBIS_PAD_BUTTON_CIRCLE, BACK},
+                {ORBIS_PAD_BUTTON_TRIANGLE, SEARCH},
                 {ORBIS_PAD_BUTTON_SQUARE, FAVORITE},
                 {ORBIS_PAD_BUTTON_L1, TAB_PREV},
                 {ORBIS_PAD_BUTTON_R1, TAB_NEXT},
@@ -246,13 +247,6 @@ int main() {
             }
 
             const int dlTab = ui.downloadsTab();
-            if (edge & ORBIS_PAD_BUTTON_TRIANGLE) {
-                if (ui.detail && !ui.keyboard && !ui.serverPicker) {
-                    ui.action(BINLOADER_INSTALL);
-                } else {
-                    ui.action(SEARCH);
-                }
-            }
             if (edge & ORBIS_PAD_BUTTON_L3) {
                 if (ui.detail && !ui.keyboard && !ui.serverPicker) {
                     ui.action(LOCAL_INSTALL);
@@ -344,9 +338,8 @@ int main() {
 
         // Ações de Instalação (Notificações BGFT, Local StorageEx ou BinLoader ELF 9090)
         if (ui.installBgRequest || ui.installLocalRequest || ui.installBinLoaderRequest) {
-            InstallMode mode = ui.installBgRequest ? InstallMode::RemoteBgft
-                             : ui.installLocalRequest ? InstallMode::LocalStorageEx
-                             : InstallMode::BinLoaderElf;
+            bool reqLocal = ui.installLocalRequest;
+            bool reqBin = ui.installBinLoaderRequest;
             ui.installBgRequest = ui.installLocalRequest = ui.installBinLoaderRequest = false;
             if (!installerReady) {
                 ui.notice = "Instalador indisponível. Reinicie o app.";
@@ -356,7 +349,10 @@ int main() {
                 std::string msg;
                 int queuedCount = 0;
                 for (const auto& item : batch) {
-                    if (installer.enqueueHomebrew(item, mode, msg) > 0) ++queuedCount;
+                    InstallMode itemMode = reqLocal ? InstallMode::LocalStorageEx
+                                         : (reqBin || item.useBinloader) ? InstallMode::BinLoaderElf
+                                         : InstallMode::RemoteBgft;
+                    if (installer.enqueueHomebrew(item, itemMode, msg) > 0) ++queuedCount;
                 }
                 ui.notice = batch.size() > 1
                     ? std::to_string(queuedCount) + " links adicionados à fila!"
