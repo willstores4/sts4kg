@@ -35,6 +35,17 @@ jobs:
             clang-${LLVM_VERSION} lld-${LLVM_VERSION} make python3 python3-pil fonts-dejavu-core unzip
           echo "LLVM_BIN=/usr/lib/llvm-${LLVM_VERSION}/bin" >> "$GITHUB_ENV"
 
+      - name: Install libssl1.1 (required by PkgTool.Core / .NET Core 3.1)
+        run: |
+          set -euo pipefail
+          for BASE in http://archive.ubuntu.com/ubuntu/pool/main/o/openssl http://security.ubuntu.com/ubuntu/pool/main/o/openssl; do
+            DEB=$(curl -fsSL "$BASE/" | grep -oE 'libssl1\.1_1\.1\.1f-1ubuntu2\.[0-9]+_amd64\.deb' | sort -uV | tail -1 || true)
+            if [ -n "$DEB" ] && curl -fsSL -o /tmp/libssl1.1.deb "$BASE/$DEB"; then
+              echo "Installing $BASE/$DEB"; sudo dpkg -i /tmp/libssl1.1.deb; exit 0
+            fi
+          done
+          echo "::error::Não foi possível baixar libssl1.1"; exit 1
+
       - name: Cache OpenOrbis toolchain
         id: cache-oo
         uses: actions/cache@v4
