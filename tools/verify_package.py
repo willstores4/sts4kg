@@ -48,6 +48,28 @@ def verify_installer_self(data):
     print("Installer permissions verified in the extracted application executable.")
 
 
+def verify_sfo(sfo):
+    if len(sfo) < 20 or sfo[:4] != b"\x00PSF" or b"WGST00001\0" not in sfo:
+        raise RuntimeError("Invalid sce_sys/param.sfo")
+    magic, _, key_off, data_off, count = struct.unpack_from("<5I", sfo, 0)
+    if magic != 0x46535000 or key_off < 20 or data_off < key_off or len(sfo) < 20 + count * 16:
+        raise RuntimeError("Malformed sce_sys/param.sfo header")
+    attrs = {}
+    for i in range(count):
+        ko, fmt, flen, _, doff = struct.unpack_from("<HHIII", sfo, 20 + i * 16)
+        k_end = sfo.find(b"\0", key_off + ko)
+        if k_end < 0:
+            raise RuntimeError("Malformed sce_sys/param.sfo key table")
+        key = sfo[key_off + ko : k_end].decode("ascii", "replace")
+        if fmt == 0x404 and flen == 4 and data_off + doff + 4 <= len(sfo):
+            attrs[key] = struct.unpack_from("<I", sfo, data_off + doff)[0]
+    # Bit 1 (0x02): Cross confirms in Common Dialog (OSK); bit 5 (0x20) cleared.
+    if (attrs.get("ATTRIBUTE", 0) & 0x22) != 0x02:
+        raise RuntimeError(
+            f"sce_sys/param.sfo ATTRIBUTE=0x{attrs.get('ATTRIBUTE', 0):08x} must assign Cross (0x02) for Common Dialogs"
+        )
+
+
 def verify(extract_root):
     uroot = extract_root / "uroot" if (extract_root / "uroot").is_dir() else extract_root
     for name in REQUIRED_FILES:
@@ -60,9 +82,7 @@ def verify(extract_root):
 
     # PkgTool.Core pkg_extract extracts uroot only; PARAM_SFO and ICON0_PNG digests
     # are already verified by pkg_validate above. Check the packaged SFO metadata too.
-    sfo = (ROOT / "sce_sys/param.sfo").read_bytes()
-    if sfo[:4] != b"\x00PSF" or b"WGST00001\0" not in sfo:
-        raise RuntimeError("Invalid sce_sys/param.sfo")
+    verify_sfo((ROOT / "sce_sys/param.sfo").read_bytes())
 
     verify_installer_self((uroot / "eboot.bin").read_bytes())
     print("Extracted PKG verified: executable, installer auth, trust store, server config, font, SFO and runtime modules match.")

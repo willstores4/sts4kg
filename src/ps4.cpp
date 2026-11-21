@@ -357,7 +357,6 @@ int main() {
                 ui.notice = batch.size() > 1
                     ? std::to_string(queuedCount) + " links adicionados à fila!"
                     : msg;
-                ui.detail = false;
             }
             ui.installBatch.clear();
             ui.dirty = true;

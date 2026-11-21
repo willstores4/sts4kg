@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import fcntl
 import struct
 import subprocess
 import sys
@@ -13,6 +12,8 @@ CID = "IV0000-WGST00001_00-HBSTORE000000000"
 
 
 def build_package(project, output, tool):
+    import fcntl
+
     project = Path(project).resolve()
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -35,7 +36,9 @@ def sfo(title="WILLGAME Store", title_id="WGST00001"):
     entries = {
         "APP_TYPE": 1,
         "APP_VER": "1.00",
-        "ATTRIBUTE": 0,
+        # Bit 1 (0x02): Enter Button Assignment for common dialogs (OSK/IME) = Cross (X).
+        # Keeping bit 5 (0x20) cleared prevents regional fallback to Circle-as-Enter.
+        "ATTRIBUTE": 0x00000002,
         "CATEGORY": "gd",
         "CONTENT_ID": CID,
         "DOWNLOAD_DATA_SIZE": 0,
