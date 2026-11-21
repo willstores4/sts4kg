@@ -9,7 +9,7 @@
 
 static std::string root;
 static std::atomic<int> remoteReg(0), storeReg(0), storageReg(0), binLoaderSent(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), appended(0), notified(0);
-static std::atomic<bool> allowComplete(false);
+static std::atomic<bool> allowComplete(false), mockAppInstalled(true);
 
 static void pauseMs(int n) {
     struct timespec ts = {n / 1000, (n % 1000) * 1000000};
@@ -110,6 +110,10 @@ static bool appendFile(const std::string& url, const std::string& dest, uint64_t
     return true;
 }
 static void notify(const std::string&) { ++notified; }
+static bool isAppInstalledFn(const std::string&, const std::string&, uint32_t, bool& outInstalled, std::string&) {
+    outInstalled = mockAppInstalled.load();
+    return true;
+}
 
 int main() {
     char dir[] = "/tmp/hbstore-installer-XXXXXX";
@@ -148,6 +152,7 @@ int main() {
     api.resumeTask = resumeFn;
     api.stopTask = stopFn;
     api.pollTask = pollFn;
+    api.isAppInstalled = isAppInstalledFn;
     api.fetchPkgHeader = fetchHeader;
     api.fetchUrl = fetchUrlFn;
     api.downloadPkgFile = dlFile;
@@ -346,6 +351,70 @@ int main() {
         // Remover a tarefa da lista nunca deve apagar o arquivo baixado diretamente pelo usuário
         assert(stat(savedPath.c_str(), &stDirect) == 0);
         unlink(savedPath.c_str());
+
+        // Testar conciliação automática (apagar arquivo direto ou desinstalar app remove 100%) e exclusão pelo caminho
+        std::string extraSub = root + "/custom/subpasta/extra.part";
+        assert(durableReplace(extraSub, "tmp"));
+        std::string listedSub = root + "/custom/subpasta/nested";
+        mkdir(listedSub.c_str(), 0755);
+
+        Game g10 = g;
+        g10.id = 10;
+        g10.title = "Payload Reconcile";
+        g10.url = "http://192.168.1.2:8765/files/reconcile.bin";
+        int id10 = installer.enqueueDirectDownload(g10, directTarget, false, msg);
+        assert(id10 > id9);
+        done = false;
+        std::string p10;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id10 && item.state == InstallState::Complete) { done = true; p10 = item.path; }
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && stat(p10.c_str(), &stDirect) == 0);
+
+        std::vector<PortalFileEntry> filesInSub;
+        assert(portalListRegularFiles(directTarget, filesInSub, pErr));
+        assert(filesInSub.size() == 1 && filesInSub[0].name == "reconcile.bin" && filesInSub[0].size == 4096);
+
+        // Enquanto arquivo e app existem, conciliar não remove 100%
+        mockAppInstalled = true;
+        assert(installer.reconcileCompletedTasks() == 0);
+
+        // Quando arquivo direto é apagado e apps foram desinstalados, conciliar limpa todas as tarefas 100%
+        assert(unlink(p10.c_str()) == 0);
+        mockAppInstalled = false;
+        int cleared = installer.reconcileCompletedTasks();
+        assert(cleared >= 2);
+        installer.snapshot(stamp, view);
+        for (const auto& item : view) {
+            assert(item.id != id10 && item.id != id1);
+        }
+
+        // Excluir arquivo diretamente via deleteDownloadedFile remove do disco e limpa a tarefa 100%
+        Game g11 = g;
+        g11.id = 11;
+        g11.title = "Payload Delete";
+        g11.url = "http://192.168.1.2:8765/files/delete_me.bin";
+        int id11 = installer.enqueueDirectDownload(g11, directTarget, false, msg);
+        assert(id11 > id10);
+        done = false;
+        std::string p11;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) if (item.id == id11 && item.state == InstallState::Complete) { done = true; p11 = item.path; }
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && stat(p11.c_str(), &stDirect) == 0);
+        assert(installer.deleteDownloadedFile(p11, id11, msg));
+        assert(stat(p11.c_str(), &stDirect) != 0);
+        installer.snapshot(stamp, view);
+        for (const auto& item : view) assert(item.id != id11);
+
+        unlink(extraSub.c_str());
+        rmdir(listedSub.c_str());
         rmdir((root + "/custom/subpasta").c_str());
         rmdir((root + "/custom").c_str());
 

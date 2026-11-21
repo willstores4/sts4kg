@@ -167,6 +167,10 @@ int main() {
     PackageInstaller installer(DATA, ps4InstallBackend());
     bool installerReady = installer.start();
     uint64_t installVersion = 0;
+    if (installerReady) {
+        installer.reconcileCompletedTasks();
+        installer.snapshot(installVersion, ui.tasks);
+    }
 
     Display display;
     if (!display.init()) {
@@ -248,15 +252,30 @@ int main() {
 
             const int dlTab = ui.downloadsTab();
             if (edge & ORBIS_PAD_BUTTON_L3) {
-                if (ui.detail && !ui.keyboard && !ui.serverPicker) {
+                if ((ui.detail || ui.tab == dlTab) && !ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
                     ui.action(LOCAL_INSTALL);
-                } else if (ui.tab != dlTab && !ui.detail && !ui.keyboard && !ui.serverPicker) {
+                } else if (ui.tab != dlTab && !ui.detail && !ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
                     ui.action(SERVER_CONFIG);
                 }
             }
             if (edge & ORBIS_PAD_BUTTON_OPTIONS) {
-                if (ui.tab == dlTab) ui.action(REMOVE_TASK);
-                else if (!ui.keyboard && !ui.serverPicker) startSync(ui.serverUrl);
+                if (ui.filesModal && !ui.deleteConfirm) {
+                    ui.action(REFRESH);
+                } else if (ui.tab == dlTab && !ui.deleteConfirm) {
+                    ui.action(REMOVE_TASK);
+                } else if (!ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
+                    if (installerReady) {
+                        int cleared = installer.reconcileCompletedTasks();
+                        if (installer.snapshot(installVersion, ui.tasks)) ui.dirty = true;
+                        if (ui.detail) ui.refreshDetailFileProbe();
+                        if (cleared > 0) {
+                            ui.notice = "Atualizado: " + std::to_string(cleared) +
+                                        " item(ns) removido(s) de 100% (apagado/desinstalado).";
+                            ui.dirty = true;
+                        }
+                    }
+                    startSync(ui.serverUrl);
+                }
             }
         }
 
@@ -372,12 +391,62 @@ int main() {
         if (ui.taskCancelRequest) { ui.taskCancelRequest = false; installer.cancelTask(ui.actionTaskId); }
         if (ui.taskRemoveRequest) { ui.taskRemoveRequest = false; installer.removeTask(ui.actionTaskId); }
 
+        if (ui.deleteExecuteRequest) {
+            ui.deleteExecuteRequest = false;
+            std::string delMsg;
+            if (installerReady) {
+                installer.deleteDownloadedFile(ui.deleteTargetPath, ui.deleteTargetTaskId, delMsg);
+                installer.reconcileCompletedTasks();
+                installer.snapshot(installVersion, ui.tasks);
+            } else {
+                uint64_t sz = 0;
+                if (portalRegularFileStatus(ui.deleteTargetPath, sz) == 1 && unlink(ui.deleteTargetPath.c_str()) != 0) {
+                    delMsg = "Não foi possível excluir " + ui.deleteTargetPath;
+                } else {
+                    delMsg = "Arquivo excluído: " + ui.deleteTargetPath;
+                }
+            }
+            ui.notice = delMsg;
+            if (ui.detail) ui.refreshDetailFileProbe();
+            if (ui.filesModal) ui.refreshFilesListing();
+            ui.dirty = true;
+        }
+
+        if (ui.reconcileStatusRequest) {
+            ui.reconcileStatusRequest = false;
+            if (installerReady) {
+                int cleared = installer.reconcileCompletedTasks();
+                installer.snapshot(installVersion, ui.tasks);
+                if (cleared > 0 && ui.notice.empty()) {
+                    ui.notice = "Atualizado: " + std::to_string(cleared) +
+                                " item(ns) removido(s) de 100% (apagado/desinstalado).";
+                }
+            }
+            if (ui.detail) ui.refreshDetailFileProbe();
+            if (ui.filesModal) ui.refreshFilesListing();
+            ui.dirty = true;
+        }
+
+        if (ui.filesRefreshRequest) {
+            ui.filesRefreshRequest = false;
+            ui.refreshFilesListing();
+            ui.dirty = true;
+        }
+
+        if (ui.detailProbeRequest) {
+            ui.detailProbeRequest = false;
+            ui.refreshDetailFileProbe();
+            ui.dirty = true;
+        }
+
         std::string instNotice;
         if (installer.takeNotice(instNotice)) {
             ui.notice = instNotice;
             ui.dirty = true;
         }
         if (installer.snapshot(installVersion, ui.tasks)) {
+            if (ui.detail) ui.refreshDetailFileProbe();
+            if (ui.filesModal) ui.refreshFilesListing();
             ui.dirty = true;
         }
 
@@ -401,6 +470,7 @@ int main() {
             ui.categories = syncedCatalog.categories;
             ui.games = syncedCatalog.items;
             ui.filter();
+            if (ui.detail) ui.refreshDetailFileProbe();
             syncReady = false;
         }
         pthread_mutex_unlock(&syncLock);

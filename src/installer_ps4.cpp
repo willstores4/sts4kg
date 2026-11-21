@@ -42,6 +42,8 @@ static void* heap = nullptr;
 static std::map<int, int> progressReports;
 #ifndef PORTAL_HOST
 static bool appInstReady = false;
+static int appInstHandle = -1;
+static int (*appExistsFn)(const char*, int*) = nullptr;
 static int (*sysNotifyFn)(int, const char*) = nullptr;
 #endif
 
@@ -138,13 +140,19 @@ static bool loadModule(OrbisSysModuleInternal id, const char* name, const char* 
 static void initOptionalHelpers() {
     if (!appInstReady) {
         std::string ignore;
-        int appInstHandle = -1;
-        if (loadNativeModuleHandle("AppInstUtil", "/system/common/lib/libSceAppInstUtil.sprx", appInstHandle, ignore) && appInstHandle >= 0) {
+        if (appInstHandle < 0) {
+            loadNativeModuleHandle("AppInstUtil", "/system/common/lib/libSceAppInstUtil.sprx", appInstHandle, ignore);
+        }
+        if (appInstHandle >= 0) {
             void* fn = nullptr;
             if (sceKernelDlsym(appInstHandle, "sceAppInstUtilInitialize", &fn) == 0 && fn) {
                 int r = ((int (*)())fn)();
                 installLog("sceAppInstUtilInitialize => 0x%08X", (unsigned)r);
                 appInstReady = true;
+            }
+            void* existsSym = nullptr;
+            if (sceKernelDlsym(appInstHandle, "sceAppInstUtilAppExists", &existsSym) == 0 && existsSym) {
+                appExistsFn = (int (*)(const char*, int*))existsSym;
             }
         }
     }
@@ -158,6 +166,66 @@ static void initOptionalHelpers() {
             }
         }
     }
+}
+
+static bool ps4DirExists(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY | O_NONBLOCK);
+    if (fd < 0) return false;
+    struct stat st;
+    bool ok = portalDescriptorInfo(fd, &st) == 0 && S_ISDIR(st.st_mode);
+    close(fd);
+    return ok;
+}
+
+static bool ps4IsAppInstalled(const std::string& titleId, const std::string& contentId, uint32_t contentType,
+                              bool& outInstalled, std::string& error) {
+    error.clear();
+    std::string tid = !titleId.empty() ? titleId : (contentId.size() == 36 ? contentId.substr(7, 9) : "");
+    if (tid.size() != 9) {
+        error = "Title ID inválido";
+        return false;
+    }
+    initOptionalHelpers();
+    if (!appInstReady || !appExistsFn) {
+        error = "AppInstUtil indisponível";
+        return false;
+    }
+    int flag = 0;
+    int r = appExistsFn(tid.c_str(), &flag);
+    installLog("sceAppInstUtilAppExists(%s) => 0x%08X exists=%d", tid.c_str(), (unsigned)r, flag);
+    if (r != 0) {
+        error = apiError("Falha ao verificar aplicativo instalado", r);
+        return false;
+    }
+    if ((flag & 0xff) == 0) {
+        outInstalled = false;
+        return true;
+    }
+
+    // Base app exists; if our process can inspect /user/app directly, verify patches/DLCs individually too.
+    if (ps4DirExists("/user/app/" + tid)) {
+        if (contentType == 0x1e) {
+            outInstalled = ps4DirExists("/user/patch/" + tid) || ps4DirExists("/mnt/ext0/user/patch/" + tid);
+            return true;
+        }
+        if (contentType == 0x1b && contentId.size() == 36) {
+            std::string label = contentId.substr(20, 16);
+            uint64_t sz = 0;
+            outInstalled = ps4DirExists("/user/addcont/" + tid + "/" + label) ||
+                           ps4DirExists("/mnt/ext0/user/addcont/" + tid + "/" + label) ||
+                           (portalRegularFileStatus("/user/addcont/" + tid + "/ac.pkg", sz) == 1) ||
+                           (portalRegularFileStatus("/mnt/ext0/user/addcont/" + tid + "/ac.pkg", sz) == 1);
+            return true;
+        }
+    }
+
+    outInstalled = true;
+    return true;
+}
+#else
+static bool ps4IsAppInstalled(const std::string&, const std::string&, uint32_t, bool&, std::string& error) {
+    error = "Verificação AppInstUtil indisponível no host";
+    return false;
 }
 #endif
 
@@ -479,6 +547,7 @@ InstallBackend ps4InstallBackend() {
     api.resumeTask = resumeTask;
     api.stopTask = stopTask;
     api.pollTask = pollTask;
+    api.isAppInstalled = ps4IsAppInstalled;
     api.fetchPkgHeader = fetchPkgHeader;
     api.fetchUrl = fetchManifestUrl;
     api.downloadPkgFile = portalNetworkDownloadFile;

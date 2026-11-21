@@ -467,6 +467,122 @@ void PackageInstaller::removeTask(int id) {
     removeDirTree(dir);
 }
 
+int PackageInstaller::reconcileCompletedTasks() {
+    struct CheckItem {
+        int id;
+        InstallMode mode;
+        std::string path;
+        std::string titleId;
+        std::string contentId;
+        uint32_t contentType;
+    };
+    std::vector<CheckItem> candidates;
+    pthread_mutex_lock(&mutex);
+    for (const auto& t : tasks) {
+        if (t.state != InstallState::Complete) continue;
+        if (t.mode == InstallMode::DirectSave && !t.path.empty()) {
+            candidates.push_back({t.id, t.mode, t.path, t.titleId, t.contentId, t.contentType});
+        } else if ((t.mode == InstallMode::RemoteBgft || t.mode == InstallMode::LocalStorageEx) &&
+                   backend.isAppInstalled && (!t.titleId.empty() || t.contentId.size() == 36)) {
+            candidates.push_back({t.id, t.mode, t.path, t.titleId, t.contentId, t.contentType});
+        }
+    }
+    pthread_mutex_unlock(&mutex);
+
+    if (candidates.empty()) return 0;
+
+    std::vector<int> staleIds;
+    for (const auto& c : candidates) {
+        if (c.mode == InstallMode::DirectSave) {
+            uint64_t sz = 0;
+            if (portalRegularFileStatus(c.path, sz) == 0) {
+                installLog("Reconcile: direct file missing (%s), clearing task %d", c.path.c_str(), c.id);
+                staleIds.push_back(c.id);
+            }
+        } else if (backend.isAppInstalled) {
+            bool installed = true;
+            std::string err;
+            std::string tid = !c.titleId.empty() ? c.titleId : (c.contentId.size() == 36 ? c.contentId.substr(7, 9) : "");
+            if (!tid.empty() && backend.isAppInstalled(tid, c.contentId, c.contentType, installed, err) && !installed) {
+                installLog("Reconcile: app/content not installed (%s / %s), clearing task %d",
+                           tid.c_str(), c.contentId.c_str(), c.id);
+                staleIds.push_back(c.id);
+            }
+        }
+    }
+    if (staleIds.empty()) return 0;
+
+    int removedCount = 0;
+    pthread_mutex_lock(&mutex);
+    for (int sid : staleIds) {
+        auto it = std::find_if(tasks.begin(), tasks.end(), [&](const InstallPackage& p) { return p.id == sid; });
+        if (it != tasks.end() && it->state == InstallState::Complete) {
+            tasks.erase(it);
+            ++removedCount;
+        }
+    }
+    if (removedCount > 0) {
+        saveLocked();
+        ++version;
+    }
+    pthread_mutex_unlock(&mutex);
+    return removedCount;
+}
+
+bool PackageInstaller::deleteDownloadedFile(const std::string& filePath, int taskId, std::string& outMessage) {
+    outMessage.clear();
+    if (filePath.empty()) {
+        outMessage = "Caminho de arquivo inválido";
+        return false;
+    }
+
+    pthread_mutex_lock(&mutex);
+    for (const auto& t : tasks) {
+        bool sameTarget = (taskId > 0 && t.id == taskId) || (t.mode == InstallMode::DirectSave && t.path == filePath);
+        if (sameTarget && (t.state == InstallState::Queued || t.state == InstallState::Downloading)) {
+            outMessage = "Download em andamento; cancele antes de excluir.";
+            pthread_mutex_unlock(&mutex);
+            return false;
+        }
+    }
+
+    uint64_t sz = 0;
+    int st = portalRegularFileStatus(filePath, sz);
+    if (st == 1) {
+        if (unlink(filePath.c_str()) != 0 && errno != ENOENT) {
+            outMessage = "Não foi possível excluir " + filePath;
+            installLog("unlink(%s) failed errno=%d", filePath.c_str(), errno);
+            pthread_mutex_unlock(&mutex);
+            return false;
+        }
+    } else if (st < 0) {
+        outMessage = "Sem permissão para acessar " + filePath;
+        pthread_mutex_unlock(&mutex);
+        return false;
+    }
+
+    bool changedQueue = false;
+    for (size_t i = 0; i < tasks.size();) {
+        bool matchTask = (taskId > 0 && tasks[i].id == taskId && tasks[i].mode == InstallMode::DirectSave);
+        bool matchPath = (tasks[i].mode == InstallMode::DirectSave && tasks[i].path == filePath);
+        if (matchTask || matchPath) {
+            tasks.erase(tasks.begin() + i);
+            changedQueue = true;
+        } else {
+            ++i;
+        }
+    }
+    if (changedQueue) {
+        saveLocked();
+        ++version;
+    }
+    pthread_mutex_unlock(&mutex);
+
+    outMessage = (st == 0) ? ("Arquivo já removido; status atualizado (" + filePath + ")")
+                           : ("Arquivo excluído: " + filePath);
+    return true;
+}
+
 bool PackageInstaller::snapshot(uint64_t& stamp, std::vector<InstallPackage>& out) {
     pthread_mutex_lock(&mutex);
     bool diff = stamp != version;

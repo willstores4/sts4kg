@@ -1,5 +1,6 @@
 #pragma once
 #include "catalog.h"
+#include "data_root.h"
 #include "installer.h"
 #include <cmath>
 #include <cstring>
@@ -333,6 +334,27 @@ struct UI {
     std::string newServerUrl;
     bool serverSaveRequest = false;
 
+    // Exclusão de arquivos em caminhos pré-selecionados e conciliação de status
+    std::string detailDirectPath, detailDirectDir;
+    bool detailDirectExists = false;
+    uint64_t detailDirectSize = 0;
+    bool detailProbeRequest = false;
+
+    bool deleteConfirm = false;
+    std::string deleteTargetPath;
+    uint64_t deleteTargetSize = 0;
+    int deleteTargetTaskId = 0;
+    bool deleteExecuteRequest = false;
+
+    bool filesModal = false;
+    std::vector<std::string> filesDirs;
+    int filesDirIndex = 0;
+    std::vector<PortalFileEntry> filesEntries;
+    int fileSelected = 0;
+    std::string filesError;
+    bool filesRefreshRequest = false;
+    bool reconcileStatusRequest = false;
+
     int downloadsTab() const { return 2 + int(categories.size()); }
     int totalTabs() const { return 3 + int(categories.size()); }
     int selectedTaskId() const {
@@ -364,9 +386,10 @@ struct UI {
         return pct >= 0 ? (std::to_string(pct) + "%") : "--%";
     }
 
-    const InstallPackage* findTaskForItem(int itemId, const std::string& urlFilter = "") const {
+    const InstallPackage* findDirectTaskForItem(int itemId, const std::string& urlFilter = "") const {
         const InstallPackage* fallback = nullptr;
         for (const auto& t : tasks) {
+            if (t.mode != InstallMode::DirectSave) continue;
             bool matchId = (itemId > 0 && t.itemId == itemId);
             bool matchUrl = (!urlFilter.empty() && t.url == urlFilter);
             if (!urlFilter.empty()) {
@@ -380,9 +403,10 @@ struct UI {
         return fallback;
     }
 
-    int countActiveTasks(int itemId = 0, int* outDone = nullptr, int* outTotal = nullptr) const {
+    int countActiveDirectTasks(int itemId = 0, int* outDone = nullptr, int* outTotal = nullptr) const {
         int active = 0, doneCount = 0, total = 0;
         for (const auto& t : tasks) {
+            if (t.mode != InstallMode::DirectSave) continue;
             if (itemId > 0 && t.itemId != itemId) continue;
             ++total;
             if (isTaskActive(t)) ++active;
@@ -393,15 +417,15 @@ struct UI {
         return active;
     }
 
-    const InstallPackage* primaryActiveTask() const {
+    const InstallPackage* primaryActiveDirectTask() const {
         for (const auto& t : tasks) {
-            if (isTaskActive(t)) return &t;
+            if (t.mode == InstallMode::DirectSave && isTaskActive(t)) return &t;
         }
         return nullptr;
     }
 
     bool hasSpinnerActivity() const {
-        return syncing || primaryActiveTask() != nullptr;
+        return syncing || primaryActiveDirectTask() != nullptr;
     }
 
     void drawProgressBar(int x, int y, int w, int h, int pct, bool active, uint32_t trackColor, uint32_t fillColor) {
@@ -456,7 +480,7 @@ struct UI {
     }
 
     void drawHeaderActivityPill(int dlTab) {
-        const InstallPackage* act = primaryActiveTask();
+        const InstallPackage* act = primaryActiveDirectTask();
         if (!act && !syncing) return;
         const uint32_t cyan = 0x318ee0, white = 0xe7eff7;
         int px = (tab == dlTab) ? 1390 : 1120;
@@ -468,7 +492,7 @@ struct UI {
             std::string pctStr = formatPercentText(taskDisplayPercent(*act));
             int pctW = c.textWidth(pctStr, 20);
             c.text(pctStr, px + pw - 16 - pctW, 53, 20, 0x5cb8ff, pctW + 8);
-            int nAct = countActiveTasks();
+            int nAct = countActiveDirectTasks();
             std::string prefix = nAct > 1 ? ("(" + std::to_string(nAct) + ") ") : "";
             std::string label = prefix + act->name;
             int maxLbl = std::max(80, pw - 74 - pctW);
@@ -479,10 +503,10 @@ struct UI {
     }
 
     void drawDetailProgressWidget(const Game& g, const Game& shown, bool isAll) {
-        const InstallPackage* t = isAll ? findTaskForItem(g.id, "") : findTaskForItem(g.id, shown.url);
+        const InstallPackage* t = isAll ? findDirectTaskForItem(g.id, "") : findDirectTaskForItem(g.id, shown.url);
         if (!t && isAll) return;
-        if (!t && g.links.size() <= 1) t = findTaskForItem(g.id, "");
-        if (!t) return;
+        if (!t && g.links.size() <= 1 && shown.directDownload) t = findDirectTaskForItem(g.id, "");
+        if (!t || t->mode != InstallMode::DirectSave) return;
 
         const uint32_t cyan = 0x318ee0, white = 0xe7eff7, muted = 0xb2bec9;
         bool active = isTaskActive(*t);
@@ -499,7 +523,7 @@ struct UI {
         std::string phaseLabel = active ? std::string(installStateName(t->state)) + "..." : installStateLabel(*t);
         if (isAll) {
             int doneCnt = 0, totCnt = 0;
-            int actCnt = countActiveTasks(g.id, &doneCnt, &totCnt);
+            int actCnt = countActiveDirectTasks(g.id, &doneCnt, &totCnt);
             if (totCnt > 1) {
                 phaseLabel += " (" + std::to_string(doneCnt) + "/" + std::to_string(totCnt) +
                               (actCnt > 0 ? ", " + std::to_string(actCnt) + " at." : "") + ")";
@@ -523,9 +547,7 @@ struct UI {
 
         drawProgressBar(400, 848, 354, 8, pct, active, 0x050b16, accentCol);
 
-        std::string infoLine = (t->mode == InstallMode::DirectSave && !t->path.empty())
-            ? ("Destino: " + t->path)
-            : (t->note.empty() ? installStatusText(*t) : t->note);
+        std::string infoLine = !t->path.empty() ? ("Destino: " + t->path) : (t->note.empty() ? installStatusText(*t) : t->note);
         c.text(infoLine, 400, 879, 16, t->state == InstallState::Error ? 0xffa5a5 : muted, 354);
 
         std::string footLine = active ? "CÍRCULO fecha janela (continua baixando)" : installStatusText(*t);
@@ -627,10 +649,201 @@ struct UI {
         filter();
     }
 
+    int findTaskIdForPath(const std::string& filePath) const {
+        if (filePath.empty()) return 0;
+        for (const auto& t : tasks) {
+            if (t.mode == InstallMode::DirectSave && t.path == filePath) return t.id;
+        }
+        return 0;
+    }
+
+    bool isPathDownloading(const std::string& filePath) const {
+        if (filePath.empty()) return false;
+        for (const auto& t : tasks) {
+            if (t.mode == InstallMode::DirectSave && t.path == filePath &&
+                (t.state == InstallState::Queued || t.state == InstallState::Downloading)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static std::string normalizeBrowserDir(const std::string& raw) {
+        if (raw.empty()) return "";
+        bool trailing = false;
+        std::string err;
+        std::string clean = normalizePs4PathInput(raw, trailing, err);
+        if (clean.empty()) return "";
+        const std::string storeRoot = hbStoreDataRoot();
+        if (clean == storeRoot || clean.compare(0, storeRoot.size() + 1, storeRoot + "/") == 0) {
+            return "";
+        }
+        return clean;
+    }
+
+    void refreshDetailFileProbe() {
+        detailDirectPath.clear();
+        detailDirectDir.clear();
+        detailDirectExists = false;
+        detailDirectSize = 0;
+        if (!detail || !current()) return;
+
+        const auto& g = *current();
+        int nLinks = !g.links.empty() ? int(g.links.size()) : 1;
+        int totalChoices = (nLinks > 1) ? (nLinks + 1) : 1;
+        int selLink = std::max(0, std::min(detailLink, totalChoices - 1));
+        bool isAll = (nLinks > 1 && selLink == nLinks);
+        if (isAll) return;
+
+        Game shown = gameForLink(g, selLink);
+        if (!shown.directDownload) return;
+
+        std::string rawDest = shown.directPath.empty() ? std::string("/data/pkg") : shown.directPath;
+        std::string err;
+        bool explicitFile = false;
+        if (!resolveDirectDownloadTarget(rawDest, shown.url, shown.title, false,
+                                         detailDirectDir, detailDirectPath, explicitFile, err, true)) {
+            detailDirectDir = "/data/pkg";
+            detailDirectPath.clear();
+        }
+        if (const InstallPackage* lt = findDirectTaskForItem(g.id, shown.url)) {
+            if (!lt->path.empty()) {
+                detailDirectPath = lt->path;
+                size_t sl = lt->path.rfind('/');
+                if (sl != std::string::npos) detailDirectDir = (sl == 0) ? "/" : lt->path.substr(0, sl);
+            }
+        }
+        uint64_t sz = 0;
+        if (!detailDirectPath.empty() && portalRegularFileStatus(detailDirectPath, sz) == 1) {
+            detailDirectExists = true;
+            detailDirectSize = sz;
+        }
+    }
+
+    void collectConfiguredDirectDirs(const std::string& preferredDir = "") {
+        filesDirs.clear();
+        auto addDir = [&](const std::string& raw, bool asDir) {
+            if (raw.empty()) return;
+            std::string candidate = raw;
+            if (!asDir) {
+                size_t sl = candidate.rfind('/');
+                if (sl != std::string::npos && sl > 0) candidate = candidate.substr(0, sl);
+            } else {
+                bool trailing = false;
+                std::string err;
+                std::string clean = normalizePs4PathInput(candidate, trailing, err);
+                if (!clean.empty() && !trailing) {
+                    size_t sl = clean.rfind('/');
+                    std::string seg = (sl == std::string::npos) ? clean : clean.substr(sl + 1);
+                    size_t dot = seg.rfind('.');
+                    if (dot != std::string::npos && dot > 0 && sl > 0) {
+                        candidate = clean.substr(0, sl);
+                    }
+                }
+            }
+            std::string norm = normalizeBrowserDir(candidate);
+            if (norm.empty()) return;
+            if (std::find(filesDirs.begin(), filesDirs.end(), norm) == filesDirs.end()) {
+                filesDirs.push_back(norm);
+            }
+        };
+
+        addDir(preferredDir, true);
+        if (const Game* cur = current()) {
+            addDir(cur->directPath, true);
+            for (const auto& lk : cur->links) addDir(lk.directPath, true);
+        }
+        addDir("/data/pkg", true);
+        addDir("/data", true);
+        for (const auto& g : games) {
+            if (g.directDownload) addDir(g.directPath, true);
+            for (const auto& lk : g.links) {
+                if (lk.directDownload) addDir(lk.directPath, true);
+            }
+        }
+        for (const auto& t : tasks) {
+            if (t.mode == InstallMode::DirectSave && !t.path.empty()) addDir(t.path, false);
+        }
+        if (filesDirs.empty()) filesDirs.push_back("/data");
+    }
+
+    void refreshFilesListing() {
+        filesEntries.clear();
+        filesError.clear();
+        if (filesDirs.empty()) collectConfiguredDirectDirs();
+        filesDirIndex = std::max(0, std::min(filesDirIndex, int(filesDirs.size()) - 1));
+        portalListRegularFiles(filesDirs[filesDirIndex], filesEntries, filesError);
+        fileSelected = filesEntries.empty() ? 0 : std::max(0, std::min(fileSelected, int(filesEntries.size()) - 1));
+    }
+
+    void openFilesManager(const std::string& preferredDir = "") {
+        collectConfiguredDirectDirs(preferredDir);
+        filesDirIndex = 0;
+        fileSelected = 0;
+        filesModal = true;
+        refreshFilesListing();
+        reconcileStatusRequest = true;
+    }
+
+    void openDeleteConfirmation(const std::string& filePath, uint64_t sizeBytes, int taskId = 0) {
+        if (filePath.empty()) return;
+        if (isPathDownloading(filePath)) {
+            notice = "Download em andamento; cancele antes de excluir.";
+            return;
+        }
+        deleteTargetPath = filePath;
+        deleteTargetSize = sizeBytes;
+        deleteTargetTaskId = taskId > 0 ? taskId : findTaskIdForPath(filePath);
+        deleteConfirm = true;
+    }
+
     void action(Action a) {
         dirty = true;
         notice.clear();
         int dlTab = downloadsTab();
+
+        if (deleteConfirm) {
+            if (a == BACK) { deleteConfirm = false; return; }
+            if (a == CONFIRM) {
+                deleteConfirm = false;
+                deleteExecuteRequest = true;
+                return;
+            }
+            return;
+        }
+
+        if (filesModal) {
+            if (a == BACK) { filesModal = false; return; }
+            if (!filesDirs.empty() && a == TAB_PREV) {
+                filesDirIndex = (filesDirIndex + int(filesDirs.size()) - 1) % int(filesDirs.size());
+                fileSelected = 0;
+                refreshFilesListing();
+                return;
+            }
+            if (!filesDirs.empty() && a == TAB_NEXT) {
+                filesDirIndex = (filesDirIndex + 1) % int(filesDirs.size());
+                fileSelected = 0;
+                refreshFilesListing();
+                return;
+            }
+            if (a == REFRESH) {
+                reconcileStatusRequest = true;
+                filesRefreshRequest = true;
+                return;
+            }
+            if (!filesEntries.empty()) {
+                int nFiles = int(filesEntries.size());
+                if (a == UP) fileSelected = std::max(0, fileSelected - 1);
+                else if (a == DOWN) fileSelected = std::min(nFiles - 1, fileSelected + 1);
+                else if (a == PAGE_PREV) fileSelected = std::max(0, fileSelected - 6);
+                else if (a == PAGE_NEXT) fileSelected = std::min(nFiles - 1, fileSelected + 6);
+                else if (a == CONFIRM) {
+                    const auto& fe = filesEntries[fileSelected];
+                    openDeleteConfirmation(fe.path, fe.size, findTaskIdForPath(fe.path));
+                }
+            }
+            return;
+        }
 
         if (keyboard) {
             const char* keys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
@@ -683,6 +896,7 @@ struct UI {
         if (a == DOWNLOADS) {
             tab = (tab == dlTab) ? 0 : dlTab;
             detail = false;
+            if (tab == dlTab) reconcileStatusRequest = true;
             filter();
             return;
         }
@@ -691,6 +905,26 @@ struct UI {
             if (a == BACK) { tab = 0; filter(); return; }
             if (a == TAB_PREV) { tab = (tab + totalTabs() - 1) % totalTabs(); selected = 0; filter(); return; }
             if (a == TAB_NEXT) { tab = 0; selected = 0; filter(); return; }
+            if (a == SORT) { openFilesManager("/data/pkg"); return; }
+            if (a == LOCAL_INSTALL) {
+                if (!tasks.empty()) {
+                    const auto& t = tasks[std::min(taskSelected, int(tasks.size()) - 1)];
+                    if (t.mode == InstallMode::DirectSave && !t.path.empty()) {
+                        uint64_t sz = 0;
+                        if (portalRegularFileStatus(t.path, sz) == 1) {
+                            openDeleteConfirmation(t.path, sz > 0 ? sz : t.bytes, t.id);
+                            return;
+                        }
+                        reconcileStatusRequest = true;
+                        size_t sl = t.path.rfind('/');
+                        std::string dir = (sl != std::string::npos && sl > 0) ? t.path.substr(0, sl) : "/data/pkg";
+                        openFilesManager(dir);
+                        return;
+                    }
+                }
+                openFilesManager("/data/pkg");
+                return;
+            }
             if (!tasks.empty()) {
                 if (a == UP) taskSelected = std::max(0, taskSelected - 1);
                 else if (a == DOWN) taskSelected = std::min(int(tasks.size()) - 1, taskSelected + 1);
@@ -723,20 +957,39 @@ struct UI {
 
             if (a == BACK) { detail = false; return; }
             if (a == FAVORITE) { favorite(); return; }
+            if (a == SORT) {
+                refreshDetailFileProbe();
+                openFilesManager(detailDirectDir.empty() ? std::string("/data/pkg") : detailDirectDir);
+                return;
+            }
             if (nLinks > 1 && (a == UP || a == TAB_PREV)) {
                 detailLink = (detailLink + totalChoices - 1) % totalChoices;
+                refreshDetailFileProbe();
                 return;
             }
             if (nLinks > 1 && (a == DOWN || a == TAB_NEXT)) {
                 detailLink = (detailLink + 1) % totalChoices;
+                refreshDetailFileProbe();
                 return;
             }
             if (nLinks > 1 && a == PAGE_PREV) {
                 detailLink = std::max(0, detailLink - 4);
+                refreshDetailFileProbe();
                 return;
             }
             if (nLinks > 1 && a == PAGE_NEXT) {
                 detailLink = std::min(totalChoices - 1, detailLink + 4);
+                refreshDetailFileProbe();
+                return;
+            }
+            if (a == LOCAL_INSTALL && cur && !(nLinks > 1 && detailLink == nLinks) &&
+                gameForLink(*cur, detailLink).directDownload) {
+                refreshDetailFileProbe();
+                if (detailDirectExists && !detailDirectPath.empty()) {
+                    openDeleteConfirmation(detailDirectPath, detailDirectSize, findTaskIdForPath(detailDirectPath));
+                } else {
+                    openFilesManager(detailDirectDir.empty() ? std::string("/data/pkg") : detailDirectDir);
+                }
                 return;
             }
             if ((a == CONFIRM || a == LOCAL_INSTALL || a == BINLOADER_INSTALL) && cur) {
@@ -784,7 +1037,7 @@ struct UI {
         else if (a == DOWN) selected = std::min(n - 1, selected + 6);
         else if (a == PAGE_PREV) selected = std::max(0, selected - 12);
         else if (a == PAGE_NEXT) selected = std::min(n - 1, selected + 12);
-        else if (a == CONFIRM) { detail = true; detailLink = 0; }
+        else if (a == CONFIRM) { detail = true; detailLink = 0; refreshDetailFileProbe(); }
     }
 
     void drawCase(const Game& g, int x, int y, int side) {
@@ -878,11 +1131,11 @@ struct UI {
             else if (i == 1) countStr = std::to_string(favorites.size());
             else if (i >= 2 && i < dlTab) countStr = std::to_string(countForCategory(categories[i - 2]));
             else if (i == dlTab) {
-                int actDl = countActiveTasks();
+                int actDl = countActiveDirectTasks();
                 if (actDl > 0) {
                     c.spinner(224, y - 7, 9, 2, spinnerAngle(), 0x163154, 0x5cb8ff);
                     if (actDl == 1) {
-                        if (const auto* act = primaryActiveTask()) countStr = formatPercentText(taskDisplayPercent(*act));
+                        if (const auto* act = primaryActiveDirectTask()) countStr = formatPercentText(taskDisplayPercent(*act));
                     } else {
                         countStr = std::to_string(actDl) + " at.";
                     }
@@ -935,7 +1188,7 @@ struct UI {
                         if (active) c.rounded(x - 2, y - 2, 238, 332, 6, cyan);
                         c.rounded(x, y, 234, 328, 5, panel);
                         drawCase(g, x, y, 234);
-                        if (const InstallPackage* cardTask = findTaskForItem(g.id)) {
+                        if (const InstallPackage* cardTask = findDirectTaskForItem(g.id)) {
                             int cardPct = taskDisplayPercent(*cardTask);
                             if (isTaskActive(*cardTask)) {
                                 c.rounded(x + 12, y + 194, 210, 32, 6, 0x061326);
@@ -948,8 +1201,7 @@ struct UI {
                             } else if (cardTask->state == InstallState::Complete) {
                                 c.rounded(x + 12, y + 196, 210, 28, 6, 0x08221e);
                                 c.rect(x + 12, y + 196, 3, 28, 0x34d399);
-                                c.text(cardTask->mode == InstallMode::DirectSave ? "100%  •  Salvo" : "100%  •  Pronto",
-                                       x + 24, y + 216, 15, 0x34d399, 190);
+                                c.text("100%  •  Salvo", x + 24, y + 216, 15, 0x34d399, 190);
                             }
                         }
 
@@ -985,41 +1237,49 @@ struct UI {
                     const auto& t = tasks[i];
                     int y = 225 + (i - start) * 142;
                     bool active = (i == taskSelected);
-                    bool tAct = isTaskActive(t);
-                    int tPct = taskDisplayPercent(t);
+                    bool isDirect = (t.mode == InstallMode::DirectSave);
                     c.rect(352, y, 1500, 128, active ? 0x12325c : panel);
                     if (active) c.rect(352, y, 5, 128, cyan);
 
-                    drawActivityIcon(t, 408, y + 64, 24, 5, false);
-
-                    c.text(t.name, 456, y + 34, 26, white, 970);
                     std::string modeBadge = t.mode == InstallMode::RemoteBgft   ? "Notificações PS4"
                                           : t.mode == InstallMode::BinLoaderElf ? "Payload ELF"
-                                          : t.mode == InstallMode::DirectSave   ? "Download Direto"
+                                          : isDirect                            ? "Download Direto"
                                                                                 : "Download Local";
                     c.text(modeBadge + (t.taskId >= 0 ? "  #" + std::to_string(t.taskId) : ""), 1460, y + 28, 18, muted, 240);
                     c.text(installStateLabel(t), 1460, y + 58, 22,
                            t.state == InstallState::Error ? 0xffa5a5 : (t.state == InstallState::Complete ? 0x34d399 : cyan), 230);
 
-                    std::string pctStr = formatPercentText(tPct);
-                    int pctW = c.textWidth(pctStr, 34);
-                    uint32_t pctCol = t.state == InstallState::Complete ? 0x34d399
-                                    : t.state == InstallState::Error    ? 0xffa5a5
-                                    : t.state == InstallState::Paused   ? 0xfbbf24 : 0x5cb8ff;
-                    c.text(pctStr, 1830 - pctW, y + 72, 34, pctCol, pctW + 8);
+                    if (isDirect) {
+                        bool tAct = isTaskActive(t);
+                        int tPct = taskDisplayPercent(t);
+                        drawActivityIcon(t, 408, y + 64, 24, 5, false);
+                        c.text(t.name, 456, y + 34, 26, white, 970);
 
-                    drawProgressBar(456, y + 52, 970, 8, tPct, tAct, 0x050912,
-                                    t.state == InstallState::Complete ? 0x34d399 : cyan);
+                        std::string pctStr = formatPercentText(tPct);
+                        int pctW = c.textWidth(pctStr, 34);
+                        uint32_t pctCol = t.state == InstallState::Complete ? 0x34d399
+                                        : t.state == InstallState::Error    ? 0xffa5a5
+                                        : t.state == InstallState::Paused   ? 0xfbbf24 : 0x5cb8ff;
+                        c.text(pctStr, 1830 - pctW, y + 72, 34, pctCol, pctW + 8);
 
-                    std::string sizePart = t.bytes > 0 ? (bytesText(t.doneBytes) + " / " + bytesText(t.bytes))
-                                         : t.doneBytes > 0 ? (bytesText(t.doneBytes) + " baixados")
-                                                           : "Calculando tamanho...";
-                    std::string stats = (t.contentId.empty() ? (t.mode == InstallMode::DirectSave ? "DIRETO" : "PKG") : t.contentId) +
-                                        "   •   " + sizePart +
-                                        (tPct >= 0 ? "   (" + pctStr + ")" : "");
-                    c.text(stats, 456, y + 88, 20, white, 970);
-                    c.text(installStatusText(t), 456, y + 116, 19,
-                           t.state == InstallState::Error ? 0xffa5a5 : muted, 1200);
+                        drawProgressBar(456, y + 52, 970, 8, tPct, tAct, 0x050912,
+                                        t.state == InstallState::Complete ? 0x34d399 : cyan);
+
+                        std::string sizePart = t.bytes > 0 ? (bytesText(t.doneBytes) + " / " + bytesText(t.bytes))
+                                             : t.doneBytes > 0 ? (bytesText(t.doneBytes) + " baixados")
+                                                               : "Calculando tamanho...";
+                        std::string stats = "DIRETO   •   " + sizePart + (tPct >= 0 ? "   (" + pctStr + ")" : "");
+                        c.text(stats, 456, y + 88, 20, white, 970);
+                        c.text(installStatusText(t), 456, y + 116, 19,
+                               t.state == InstallState::Error ? 0xffa5a5 : muted, 1200);
+                    } else {
+                        c.text(t.name, 377, y + 36, 26, white, 1050);
+                        std::string infoId = t.contentId.empty() ? "PKG" : t.contentId;
+                        if (t.bytes > 0) infoId += "   •   " + bytesText(t.bytes);
+                        c.text(infoId, 377, y + 76, 20, muted, 1050);
+                        c.text(installStatusText(t), 377, y + 110, 20,
+                               t.state == InstallState::Error ? 0xffa5a5 : white, 1280);
+                    }
                 }
             }
         }
@@ -1036,11 +1296,13 @@ struct UI {
             c.text("R3  Notificações", 1410, 1032, 21, white);
             c.text("OPTIONS  Sincronizar", 1630, 1032, 21, white);
         } else {
-            c.text("X  Pausar / Retomar", 352, 1032, 21, white);
-            c.text("TRIÂNGULO  Tentar novamente", 610, 1032, 21, white);
-            c.text("QUADRADO  Cancelar", 940, 1032, 21, white);
-            c.text("OPTIONS  Remover", 1200, 1032, 21, white);
-            c.text("CÍRCULO  Voltar", 1450, 1032, 21, white);
+            c.text("X  Pausar/Retomar", 352, 1032, 20, white);
+            c.text("TRIÂNGULO  Tentar", 575, 1032, 20, white);
+            c.text("QUADRADO  Cancelar", 785, 1032, 20, white);
+            c.text("OPTIONS  Remover", 1015, 1032, 20, white);
+            c.text("L3  Excluir arquivo", 1225, 1032, 20, cyan);
+            c.text("TOUCHPAD  Arquivos", 1455, 1032, 20, cyan);
+            c.text("CÍRCULO  Voltar", 1685, 1032, 20, white);
         }
 
         // Modal de Detalhes
@@ -1104,8 +1366,8 @@ struct UI {
                     int idx = rowStart + r;
                     int by = 556 + r * 60;
                     bool activeBtn = (idx == selLink);
-                    const InstallPackage* lt = (idx < nLinks) ? findTaskForItem(g.id, g.links[idx].url) : nullptr;
-                    int batchActive = (idx == nLinks) ? countActiveTasks(g.id) : 0;
+                    const InstallPackage* lt = (idx < nLinks) ? findDirectTaskForItem(g.id, g.links[idx].url) : nullptr;
+                    int batchActive = (idx == nLinks) ? countActiveDirectTasks(g.id) : 0;
 
                     c.rect(810, by, btnW, 50, activeBtn ? cyan : 0x12325c);
                     if (!activeBtn) c.rect(810, by, 5, 50, cyan);
@@ -1158,13 +1420,22 @@ struct UI {
                 }
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 816, 20, cyan, 1020);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     CÍRCULO  Voltar", 810, 850, 22, white, 1042);
+                if (!isAll && shown.directDownload) {
+                    std::string dirShow = detailDirectDir.empty() ? std::string("/data/pkg") : detailDirectDir;
+                    std::string l3Act = detailDirectExists
+                        ? ("L3  Excluir arquivo (" + bytesText(detailDirectSize) + ")")
+                        : ("L3 / TOUCHPAD  Arquivos em " + dirShow);
+                    c.text(l3Act + "     OPTIONS  Atualizar     CÍRCULO  Voltar", 810, 850, 20, cyan, 1042);
+                } else {
+                    c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     OPTIONS  Atualizar     CÍRCULO  Voltar",
+                           810, 850, 20, white, 1042);
+                }
                 c.lines(isAll ? g.url : shown.url, 810, 892, 19, muted, 1042, 2);
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
-                const InstallPackage* singleTask = findTaskForItem(g.id, shown.url);
-                if (!singleTask) singleTask = findTaskForItem(g.id, "");
+                const InstallPackage* singleTask = findDirectTaskForItem(g.id, shown.url);
+                if (!singleTask && shown.directDownload) singleTask = findDirectTaskForItem(g.id, "");
                 bool singleActive = singleTask && isTaskActive(*singleTask);
                 if (singleActive) {
                     int sPct = taskDisplayPercent(*singleTask);
@@ -1174,13 +1445,8 @@ struct UI {
                     std::string sPctStr = formatPercentText(sPct);
                     int sPctW = c.textWidth(sPctStr, 30);
                     c.text(sPctStr, 1826 - sPctW, 718, 30, 0x5cb8ff, sPctW + 8);
-                    std::string actLabel = singleTask->mode == InstallMode::DirectSave
-                        ? ("Baixando direto para " + (singleTask->path.empty() ? std::string("/data/pkg") : singleTask->path) + "...")
-                        : singleTask->mode == InstallMode::BinLoaderElf
-                              ? "Enviando payload ELF (BinLoader 127.0.0.1:9090)..."
-                              : singleTask->mode == InstallMode::LocalStorageEx
-                                    ? "Baixando PKG localmente no PS4..."
-                                    : "Baixando em Notificações do PS4...";
+                    std::string actLabel = "Baixando direto para " +
+                        (singleTask->path.empty() ? std::string("/data/pkg") : singleTask->path) + "...";
                     c.text(actLabel, 876, 716, 25, white, std::max(240, 930 - sPctW));
                 } else {
                     c.rect(810, 675, 1042, 66, cyan);
@@ -1191,14 +1457,24 @@ struct UI {
                               : "X  Instalar em Background (Notificações PS4)";
                     c.text(mainActionLabel, 836, 720, 28, bg, 990);
                 }
-                c.text(shown.directDownload
-                           ? (singleActive ? "R3  Ver Notificações     CÍRCULO  Voltar (continua baixando)"
-                                           : "R3  Ver Notificações     CÍRCULO  Voltar ao catálogo")
-                           : (singleActive ? "L3  Baixar no App (Local)     R3  Notificações     CÍRCULO  Voltar"
-                                           : "L3  Baixar no App + Instalar (Local)     R3  Ver Notificações"),
-                       810, 780, 24, white, 1042);
-                if (!shown.directDownload && !singleActive) {
-                    c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                if (shown.directDownload) {
+                    std::string dirShow = detailDirectDir.empty() ? std::string("/data/pkg") : detailDirectDir;
+                    std::string line1 = detailDirectExists
+                        ? ("L3  Excluir arquivo salvo (" + bytesText(detailDirectSize) + ")     R3  Notificações")
+                        : ("L3  Gerenciar/Excluir em " + dirShow + "     R3  Notificações");
+                    c.text(line1, 810, 780, 22, detailDirectExists ? uint32_t(0xffa5a5) : cyan, 1042);
+                    c.text(singleActive
+                               ? "OPTIONS  Atualizar     CÍRCULO  Voltar (continua baixando)"
+                               : "TOUCHPAD  Pasta     OPTIONS  Atualizar status     CÍRCULO  Voltar",
+                           810, 820, 20, muted, 1042);
+                } else {
+                    c.text(singleActive
+                               ? "L3  Baixar no App (Local)     R3  Notificações     CÍRCULO  Voltar"
+                               : "L3  Baixar no App + Instalar (Local)     R3  Ver Notificações",
+                           810, 780, 24, white, 1042);
+                    if (!singleActive) {
+                        c.text("OPTIONS  Atualizar status     CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                    }
                 }
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
@@ -1247,6 +1523,84 @@ struct UI {
                 c.text(label, x + 12, y + 45, i < 41 ? 30 : 21, i == key ? bg : white, 100);
             }
             c.text("D-pad  Mover     X  Digitar     CÍRCULO  Fechar", 400, 890, 24, muted);
+        }
+
+        // Modal Gerenciar / Excluir Arquivos Baixados nos Caminhos Pré-Selecionados
+        if (filesModal) {
+            c.rect(290, 140, 1340, 760, 0x091c34);
+            c.rect(290, 140, 7, 760, cyan);
+            c.text("Arquivos Baixados (Caminhos Pré-Selecionados)", 340, 202, 36, white, 1240);
+
+            std::string curDir = filesDirs.empty() ? std::string("/data/pkg")
+                                                   : filesDirs[std::max(0, std::min(filesDirIndex, int(filesDirs.size()) - 1))];
+            std::string dirDisp = (curDir == "/data") ? "/data/" : curDir;
+            c.rounded(340, 228, 1240, 48, 6, 0x0d2747);
+            std::string navDir = "L1  <   Pasta (" + std::to_string(filesDirIndex + 1) + "/" +
+                                 std::to_string(std::max(1, int(filesDirs.size()))) + "):  " + dirDisp + "   >  R1";
+            c.text(navDir, 362, 260, 22, cyan, 940);
+            std::string cntTxt = std::to_string(filesEntries.size()) + " arquivo(s)";
+            int cntW = c.textWidth(cntTxt, 20);
+            c.text(cntTxt, 1558 - cntW, 259, 20, white, cntW + 8);
+
+            if (!filesError.empty()) {
+                c.text(filesError, 340, 355, 24, 0xffa5a5, 1240);
+            } else if (filesEntries.empty()) {
+                c.text("Nenhum arquivo encontrado em " + dirDisp, 340, 390, 30, white, 1240);
+                c.text("Use L1 / R1 para alternar entre /data/, /data/pkg e caminhos cadastrados no painel.", 340, 440, 21, muted, 1240);
+            } else {
+                const int maxRows = 6;
+                int nFiles = int(filesEntries.size());
+                fileSelected = std::max(0, std::min(fileSelected, nFiles - 1));
+                int startIdx = (nFiles > maxRows) ? std::max(0, std::min(fileSelected - 2, nFiles - maxRows)) : 0;
+                bool hasScroll = nFiles > maxRows;
+                int rowW = hasScroll ? 1216 : 1240;
+                for (int r = 0; r < std::min(maxRows, nFiles); ++r) {
+                    int idx = startIdx + r;
+                    const auto& fe = filesEntries[idx];
+                    int ry = 298 + r * 82;
+                    bool activeRow = (idx == fileSelected);
+                    c.rect(340, ry, rowW, 68, activeRow ? cyan : 0x12325c);
+                    if (!activeRow) c.rect(340, ry, 5, 68, cyan);
+
+                    bool dlBusy = isPathDownloading(fe.path);
+                    int tid = findTaskIdForPath(fe.path);
+                    c.text((activeRow ? "X  " : "   ") + fe.name, 362, ry + 34, 24, activeRow ? bg : white, 820);
+                    std::string meta = dlBusy ? "[Download em andamento]"
+                                     : (tid > 0 ? "[Baixado pela loja]" : fe.path);
+                    c.text(meta, 366, ry + 57, 16,
+                           activeRow ? bg : (dlBusy ? uint32_t(0xfbbf24) : (tid > 0 ? uint32_t(0x34d399) : muted)), 820);
+
+                    std::string szStr = bytesText(fe.size);
+                    int szW = c.textWidth(szStr, 22);
+                    c.text(szStr, 340 + rowW - 22 - szW, ry + 42, 22, activeRow ? bg : cyan, szW + 8);
+                }
+                if (hasScroll) {
+                    const int sbX = 1568, sbY = 298, sbW = 10, sbH = 478;
+                    c.rect(sbX, sbY, sbW, sbH, 0x081322);
+                    int thumbH = std::max(36, sbH * maxRows / nFiles);
+                    int maxOff = std::max(1, nFiles - maxRows);
+                    int thumbY = sbY + (sbH - thumbH) * startIdx / maxOff;
+                    c.rect(sbX, thumbY, sbW, thumbH, cyan);
+                }
+            }
+            c.text("X  Excluir arquivo selecionado     L1/R1  Trocar pasta     OPTIONS  Atualizar     CÍRCULO  Fechar",
+                   340, 862, 20, muted, 1240);
+        }
+
+        // Modal Confirmar Exclusão do Arquivo
+        if (deleteConfirm) {
+            c.rect(460, 315, 1000, 380, 0x0c1626);
+            c.rect(460, 315, 7, 380, 0xff6b6b);
+            c.text("Confirmar exclusão do arquivo?", 510, 382, 36, white, 900);
+            c.text("O arquivo será apagado permanentemente do armazenamento do PS4:", 510, 424, 21, 0xffa5a5, 900);
+            c.rounded(510, 446, 900, 112, 8, 0x060d18);
+            c.lines(deleteTargetPath, 530, 488, 22, white, 860, 2);
+            c.text("Tamanho: " + bytesText(deleteTargetSize), 530, 544, 19, cyan, 860);
+
+            c.rounded(510, 594, 340, 56, 6, 0xc93b47);
+            c.text("X  Confirmar exclusão", 542, 631, 24, white, 300);
+            c.rounded(876, 594, 260, 56, 6, 0x12325c);
+            c.text("CÍRCULO  Cancelar", 914, 631, 24, white, 220);
         }
 
         if (!notice.empty()) {

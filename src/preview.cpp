@@ -48,14 +48,15 @@ int main(int argc, char** argv) {
         InstallPackage p;
         p.id = 1;
         p.itemId = g.id;
-        p.taskId = 42;
+        p.mode = InstallMode::DirectSave;
+        p.path = "/data/pkg/apollo.pkg";
         p.name = "Apollo Save Tool";
         p.contentId = g.contentId;
         p.bytes = g.sizeBytes;
         p.doneBytes = g.sizeBytes / 2;
         p.percent = 50;
-        p.state = InstallState::Installing;
-        p.note = "Baixando em Notificações do PS4";
+        p.state = InstallState::Downloading;
+        p.note = "Baixando em /data/pkg/apollo.pkg...";
         ui.tasks.push_back(p);
         ui.animFrame = 12;
     }

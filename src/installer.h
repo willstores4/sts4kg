@@ -2,6 +2,7 @@
 #include "catalog.h"
 #include "network_ps4.h"
 #include "path_info.h"
+#include <dirent.h>
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -77,12 +78,13 @@ inline std::string installStatusText(const InstallPackage& p) {
         return "Instalado";
     }
     if (p.state == InstallState::Downloading) {
-        if (p.percent >= 0 && p.percent <= 100) return "Baixando  " + std::to_string(p.percent) + "%";
-        return "Baixando";
+        if (p.mode == InstallMode::DirectSave && p.percent >= 0 && p.percent <= 100) {
+            return "Baixando  " + std::to_string(p.percent) + "%";
+        }
+        return p.mode == InstallMode::DirectSave ? "Baixando" : "Preparando download local";
     }
     if (p.state == InstallState::Installing) {
-        if (p.percent > 0 && p.percent < 100) return "Notificações  " + std::to_string(p.percent) + "%";
-        return "Baixando em Notificações";
+        return "Baixando em Notificações do PS4";
     }
     return p.note.empty() ? std::string(installStateName(p.state)) : p.note;
 }
@@ -272,6 +274,73 @@ inline bool resolveDirectDownloadTarget(const std::string& rawInput, const std::
     return true;
 }
 
+struct PortalFileEntry {
+    std::string name;
+    std::string path;
+    uint64_t size = 0;
+};
+
+// Returns 1 if regular file exists, 0 if definitely missing/not regular, -1 if access error.
+inline int portalRegularFileStatus(const std::string& path, uint64_t& outSize) {
+    outSize = 0;
+    if (path.empty()) return 0;
+    int flags = O_RDONLY;
+#ifdef O_NOFOLLOW
+    flags |= O_NOFOLLOW;
+#endif
+#ifdef O_NONBLOCK
+    flags |= O_NONBLOCK;
+#endif
+    int fd = open(path.c_str(), flags);
+    if (fd < 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return 0;
+        if (errno == ELOOP) return 0;
+        return -1;
+    }
+    struct stat st;
+    int rc = portalDescriptorInfo(fd, &st);
+    close(fd);
+    if (rc != 0) return -1;
+    if (!S_ISREG(st.st_mode)) return 0;
+    outSize = st.st_size > 0 ? uint64_t(st.st_size) : 0;
+    return 1;
+}
+
+inline bool portalListRegularFiles(const std::string& rawDir, std::vector<PortalFileEntry>& outFiles, std::string& error) {
+    outFiles.clear();
+    error.clear();
+    bool trailingSlash = false;
+    std::string dir = normalizePs4PathInput(rawDir, trailingSlash, error);
+    if (dir.empty()) return false;
+
+    DIR* d = opendir(dir.c_str());
+    if (!d) {
+        if (errno == ENOENT) return true;
+        error = "Não foi possível abrir a pasta " + dir;
+        return false;
+    }
+    while (dirent* e = readdir(d)) {
+        std::string name = e->d_name;
+        if (name.empty() || name[0] == '.') continue;
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".part") == 0) continue;
+        std::string fullPath = (dir == "/" ? "" : dir) + "/" + name;
+        uint64_t sz = 0;
+        if (portalRegularFileStatus(fullPath, sz) == 1) {
+            PortalFileEntry entry;
+            entry.name = name;
+            entry.path = fullPath;
+            entry.size = sz;
+            outFiles.push_back(std::move(entry));
+        }
+    }
+    closedir(d);
+
+    std::sort(outFiles.begin(), outFiles.end(), [](const PortalFileEntry& a, const PortalFileEntry& b) {
+        return lower(a.name) < lower(b.name);
+    });
+    return true;
+}
+
 struct InstallBackend {
     bool (*registerRemoteTask)(const InstallPackage&, int&, std::string&) = nullptr;
     bool (*registerStoreTask)(const InstallPackage&, int&, std::string&) = nullptr;
@@ -282,6 +351,8 @@ struct InstallBackend {
     bool (*resumeTask)(int, std::string&) = nullptr;
     bool (*stopTask)(int, std::string&) = nullptr;
     bool (*pollTask)(int, uint64_t&, uint64_t&, int&, bool&, std::string&) = nullptr;
+    bool (*isAppInstalled)(const std::string& titleId, const std::string& contentId, uint32_t contentType,
+                           bool& outInstalled, std::string& error) = nullptr;
     bool (*fetchPkgHeader)(const std::string&, std::string&, std::string&) = nullptr;
     bool (*fetchUrl)(const std::string&, std::string&, size_t, std::string&) = nullptr;
     bool (*downloadPkgFile)(const std::string&, const std::string&, uint64_t,
@@ -335,6 +406,8 @@ public:
     void retryTask(int id);
     void cancelTask(int id);
     void removeTask(int id);
+    int reconcileCompletedTasks();
+    bool deleteDownloadedFile(const std::string& filePath, int taskId, std::string& outMessage);
     bool snapshot(uint64_t& stamp, std::vector<InstallPackage>& out);
     bool takeNotice(std::string& out);
 };

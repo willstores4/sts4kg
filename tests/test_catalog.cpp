@@ -298,8 +298,23 @@ int main() {
 
     ui.games = multiRound;
     ui.filter();
+
+    // Tarefas que NÃO são Download Direto não exibem spinner nem porcentagem na loja
+    InstallPackage tNonDirect = tActive;
+    tNonDirect.id = 100;
+    tNonDirect.itemId = 20;
+    tNonDirect.mode = InstallMode::RemoteBgft;
+    tNonDirect.state = InstallState::Installing;
+    tNonDirect.percent = 55;
+    ui.tasks = {tNonDirect};
+    assert(!ui.hasSpinnerActivity());
+    assert(ui.primaryActiveDirectTask() == nullptr);
+    assert(ui.findDirectTaskForItem(20) == nullptr);
+    ui.draw();
+
     ui.tasks = {tActive};
     assert(ui.hasSpinnerActivity());
+    assert(ui.primaryActiveDirectTask() != nullptr);
     int idxDirect = -1;
     for (size_t vi = 0; vi < ui.visible.size(); ++vi) {
         if (ui.games[ui.visible[vi]].id == 23) { idxDirect = int(vi); break; }
@@ -352,6 +367,48 @@ int main() {
     ui.draw();
     ui.syncing = false;
     assert(!ui.hasSpinnerActivity());
+
+    // Gerenciador / Exclusão de arquivos em caminho pré-selecionado (/data/...)
+    char fdir[] = "/tmp/hbstore-uifiles-XXXXXX";
+    assert(mkdtemp(fdir));
+    std::string fdirStr = fdir;
+    mkdir((fdirStr + "/subignore").c_str(), 0755);
+    assert(writeFile(fdirStr + "/goldhen.bin", std::string(64, 'A')));
+    assert(writeFile(fdirStr + "/partial.pkg.part", std::string(16, 'B')));
+
+    Game gFile = multiRound[2];
+    gFile.id = 23;
+    gFile.directDownload = true;
+    gFile.directPath = fdirStr;
+    gFile.url = "http://192.168.1.2:8765/files/goldhen.bin";
+    ui.games = {gFile};
+    ui.filter();
+    ui.selected = 0;
+    ui.action(CONFIRM); // abre detalhes de item direto cujo arquivo já existe no caminho configurado
+    assert(ui.detail && ui.detailDirectExists && ui.detailDirectPath == fdirStr + "/goldhen.bin" && ui.detailDirectSize == 64);
+    ui.action(LOCAL_INSTALL); // L3 em item direto existente abre confirmação de exclusão
+    assert(ui.deleteConfirm && ui.deleteTargetPath == fdirStr + "/goldhen.bin" && !ui.installLocalRequest);
+    ui.draw();
+    ui.action(BACK);
+    assert(!ui.deleteConfirm);
+
+    ui.action(SORT); // TOUCHPAD em detalhes abre gerenciador da pasta pré-selecionada
+    assert(ui.filesModal && !ui.filesDirs.empty() && ui.filesDirs[0] == fdirStr);
+    assert(ui.filesEntries.size() == 1 && ui.filesEntries[0].name == "goldhen.bin");
+    ui.draw();
+    ui.action(CONFIRM); // X seleciona arquivo -> confirmação de exclusão
+    assert(ui.deleteConfirm && ui.deleteTargetPath == fdirStr + "/goldhen.bin");
+    ui.action(CONFIRM); // X confirma -> sinaliza execução
+    assert(!ui.deleteConfirm && ui.deleteExecuteRequest);
+    ui.deleteExecuteRequest = false;
+    ui.action(BACK); // fecha filesModal
+    ui.action(BACK); // fecha detail
+    assert(!ui.filesModal && !ui.detail);
+
+    unlink((fdirStr + "/goldhen.bin").c_str());
+    unlink((fdirStr + "/partial.pkg.part").c_str());
+    rmdir((fdirStr + "/subignore").c_str());
+    rmdir(fdirStr.c_str());
 
     unlink("build/test-data/favorites.txt");
     rmdir("build/test-data");
