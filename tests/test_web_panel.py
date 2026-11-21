@@ -927,6 +927,105 @@ class WebPanelTests(unittest.TestCase):
         status, _, _ = self.request("GET", "/api/catalog.json")
         self.assertEqual(status, 200)
 
+    def test_10_session_limit_per_user_and_policy(self):
+        # 1. Cria usuário limitado a 1 sessão (política padrão 'block')
+        status, _, u1_raw = self.request("POST", "/api/admin/users", {
+            "username": "limitado",
+            "password": "123",
+            "max_sessions": 1,
+        })
+        self.assertEqual(status, 201)
+        u1 = json.loads(u1_raw)["user"]
+        self.assertEqual(u1["max_sessions"], 1)
+        self.assertEqual(u1["effective_max_sessions"], 1)
+
+        # Primeiro login ok
+        status, _, l1_raw = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        self.assertEqual(status, 200)
+        tok1 = json.loads(l1_raw)["token"]
+        self.assertEqual(json.loads(l1_raw)["user"]["max_sessions"], 1)
+
+        # Segundo login bloqueado (403)
+        status, _, l2_err = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        self.assertEqual(status, 403)
+        self.assertIn("Limite de sessões", json.loads(l2_err)["error"])
+
+        # Sessão 1 segue válida
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok1})
+        self.assertEqual(status, 200)
+
+        # Logout da sessão 1 libera novo login
+        status, _, _ = self.request("POST", "/api/app/logout", headers={"X-App-Token": tok1})
+        self.assertEqual(status, 200)
+        status, _, l2_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        self.assertEqual(status, 200)
+        tok2 = json.loads(l2_ok)["token"]
+
+        # 2. Muda política para 'kick_oldest': novo login derruba sessão anterior automaticamente
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "Teste",
+            "session_limit_policy": "kick_oldest",
+            "default_max_sessions": 2,
+        })
+        self.assertEqual(status, 200)
+
+        status, _, l3_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        self.assertEqual(status, 200)
+        tok3 = json.loads(l3_ok)["token"]
+
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok2})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok3})
+        self.assertEqual(status, 200)
+
+        # 3. Usuário usando padrão global (2 sessões) vs usuário com -1 (ilimitado)
+        status, _, u_def_raw = self.request("POST", "/api/admin/users", {
+            "username": "padrao_global",
+            "password": "123",
+            "max_sessions": 0,
+        })
+        self.assertEqual(status, 201)
+        u_def = json.loads(u_def_raw)["user"]
+        self.assertEqual(u_def["effective_max_sessions"], 2)
+
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "Teste",
+            "session_limit_policy": "block",
+            "default_max_sessions": 2,
+        })
+        self.assertEqual(status, 200)
+
+        t_a = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})[2])["token"]
+        t_b = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})[2])["token"]
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})
+        self.assertEqual(status, 403)
+
+        # Reduzir limite individual do usuário para 1 derruba excesso e preserva sessão mais recente
+        status, _, _ = self.request("PUT", f"/api/admin/users/{u_def['id']}", {"max_sessions": 1})
+        self.assertEqual(status, 200)
+        status, _, st_raw = self.request("GET", "/api/admin/users")
+        self.assertEqual(status, 200)
+        u_now = [x for x in json.loads(st_raw)["users"] if x["id"] == u_def["id"]][0]
+        self.assertEqual(u_now["active_sessions"], 1)
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_a})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_b})
+        self.assertEqual(status, 200)
+
+        # Usuário com max_sessions = -1 ignora limite global (2) e permite 3+ sessões
+        status, _, u_unlim_raw = self.request("POST", "/api/admin/users", {
+            "username": "vip_ilimitado",
+            "password": "123",
+            "max_sessions": -1,
+        })
+        self.assertEqual(status, 201)
+        self.assertEqual(json.loads(u_unlim_raw)["user"]["effective_max_sessions"], 0)
+        for _ in range(3):
+            st, _, _ = self.request("POST", "/api/app/login", {"username": "vip_ilimitado", "password": "123"})
+            self.assertEqual(st, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
