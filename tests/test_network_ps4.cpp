@@ -9,7 +9,9 @@ static int rootCount = 0, loadCalls = 0, loadResult = 0, sendFailure = 0, sslQue
 static int termCalls = 0, sslTermCalls = 0, poolTermCalls = 0;
 static bool keepalive = false, bodySent = false;
 static int responseCode = 200;
-static std::string lastRangeHeader;
+static int expectedMethod = ORBIS_METHOD_GET;
+static uint64_t lastReqContentLen = 0;
+static std::string lastRangeHeader, lastAppTokenHeader, lastContentTypeHeader, lastPostBody, mockResponseBody = "page";
 
 static void checkRoots() {
     assert(loadedRoots && rootCount == 118);
@@ -74,19 +76,29 @@ extern "C" int32_t sceHttpSetSendTimeOut(int32_t, uint32_t) { return 0; }
 extern "C" int recvTimeout(int, unsigned) { return 0; }
 extern "C" int32_t sceHttpCreateConnectionWithURL(int32_t id, const char*, bool value) { assert(id == 4); keepalive = value; return 5; }
 extern "C" int32_t sceHttpDeleteConnection(int32_t id) { assert(id == 5); return 0; }
-extern "C" int32_t sceHttpCreateRequestWithURL(int32_t id, int32_t method, const char*, uint64_t) {
-    assert(id == 5 && method == ORBIS_METHOD_GET);
+extern "C" int32_t sceHttpCreateRequestWithURL(int32_t id, int32_t method, const char*, uint64_t contentLen) {
+    assert(id == 5 && method == expectedMethod);
+    lastReqContentLen = contentLen;
     bodySent = false;
     lastRangeHeader.clear();
+    lastAppTokenHeader.clear();
+    lastContentTypeHeader.clear();
+    lastPostBody.clear();
     return 6;
 }
 extern "C" int32_t sceHttpDeleteRequest(int32_t id) { assert(id == 6); return 0; }
 extern "C" int32_t sceHttpAddRequestHeader(int32_t, const char* name, const char* val, int32_t) {
-    if (name && val && std::string(name) == "Range") lastRangeHeader = val;
+    if (name && val) {
+        std::string k(name);
+        if (k == "Range") lastRangeHeader = val;
+        else if (k == "X-App-Token") lastAppTokenHeader = val;
+        else if (k == "Content-Type") lastContentTypeHeader = val;
+    }
     return 0;
 }
-extern "C" int32_t sceHttpSendRequest(int32_t id, const void*, size_t) {
+extern "C" int32_t sceHttpSendRequest(int32_t id, const void* postData, size_t size) {
     assert(id == 6);
+    if (postData && size > 0) lastPostBody.assign((const char*)postData, size);
     if (!loadedRoots || !keepalive) return (int32_t)0x8095f00c;
     checkRoots();
     return sendFailure;
@@ -95,12 +107,13 @@ extern "C" int32_t sceHttpGetLastErrno(int32_t, int32_t* number) { *number = 0; 
 extern "C" int httpsError(int, int* number, uint32_t* flags) { ++sslQueries; *number = (int)0x8095f00a; *flags = 0x20; return 0; }
 extern "C" int32_t sceHttpGetStatusCode(int32_t, int32_t* code) { *code = responseCode; return 0; }
 extern "C" int32_t sceHttpGetAllResponseHeaders(int32_t, char**, size_t*) { return -1; }
-extern "C" int32_t sceHttpReadData(int32_t, void* data, uint32_t) {
+extern "C" int32_t sceHttpReadData(int32_t, void* data, uint32_t maxLen) {
     if (bodySent) return 0;
     checkRoots();
-    memcpy(data, "page", 4);
+    size_t n = std::min<size_t>(mockResponseBody.size(), maxLen);
+    memcpy(data, mockResponseBody.data(), n);
     bodySent = true;
-    return 4;
+    return (int32_t)n;
 }
 
 static void resetNetwork() {
@@ -139,7 +152,27 @@ int main() {
     std::string tcpErr;
     assert(portalNetworkSendTcp("127.0.0.1", 9090, "ELFPAYLOAD", tcpErr));
     assert(tcpPortSeen == 9090 && tcpSentBytes == 10 && tcpClosed == 1);
+
+    // Testar authenticated GET e JSON POST incluindo captura do corpo de erro 401
+    int httpCode = 0;
+    std::string authOut, authErr;
+    expectedMethod = ORBIS_METHOD_GET;
+    mockResponseBody = "{\"error\":\"Token invalido\"}";
+    responseCode = 401;
+    assert(!portalNetworkFetchAuth("http://192.168.1.2:8765/api/catalog.json", "tok123", authOut, 4096, httpCode, authErr));
+    assert(httpCode == 401 && lastAppTokenHeader == "tok123" && authOut == mockResponseBody);
+
+    expectedMethod = ORBIS_METHOD_POST;
+    responseCode = 200;
+    mockResponseBody = "{\"ok\":true,\"token\":\"abc\"}";
+    std::string reqJson = "{\"username\":\"u1\",\"password\":\"p1\"}";
+    assert(portalNetworkPostJson("http://192.168.1.2:8765/api/app/login", reqJson, "", authOut, 4096, httpCode, authErr));
+    assert(httpCode == 200 && lastReqContentLen == reqJson.size() && lastPostBody == reqJson);
+    assert(lastContentTypeHeader == "application/json; charset=utf-8" && authOut == mockResponseBody);
+    expectedMethod = ORBIS_METHOD_GET;
+    mockResponseBody = "page";
+
     resetNetwork();
-    std::cout << "HTTPS trust registration, LAN HTTP, Range fetch, BinLoader TCP and init retry passed.\n";
+    std::cout << "HTTPS trust registration, LAN HTTP, Range fetch, Auth GET/POST JSON, BinLoader TCP and init retry passed.\n";
     return 0;
 }

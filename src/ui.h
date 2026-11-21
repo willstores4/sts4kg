@@ -292,7 +292,7 @@ enum Action {
 };
 
 struct UI {
-    enum KeyboardTarget { KbNone = 0, KbSearch = 1, KbServer = 2 };
+    enum KeyboardTarget { KbNone = 0, KbSearch = 1, KbServer = 2, KbLoginUser = 3, KbLoginPass = 4 };
 
     Canvas c;
     std::string base, data;
@@ -314,7 +314,16 @@ struct UI {
     int animFrame = 0;
     KeyboardTarget kbTarget = KbNone;
     std::string kbBuffer;
+    bool kbShift = false;
     std::string notice;
+
+    // Login no Aplicativo (Tela inicial quando Painel exige usuário)
+    bool loginScreen = false;
+    bool loginSubmitting = false;
+    int loginField = 0; // 0 = Usuário, 1 = Senha, 2 = Entrar, 3 = Servidor
+    std::string loginUser, loginPass, loginError;
+    std::string loggedUsername, loggedDisplayName;
+    bool loginSubmitRequest = false, logoutRequest = false;
 
     // Fila de instalações / Notificações PS4
     std::vector<InstallPackage> tasks;
@@ -425,7 +434,11 @@ struct UI {
     }
 
     bool hasSpinnerActivity() const {
-        return syncing || primaryActiveDirectTask() != nullptr;
+        return syncing || loginSubmitting || primaryActiveDirectTask() != nullptr;
+    }
+
+    static std::string maskSecret(size_t len) {
+        return std::string(len, '*');
     }
 
     void drawProgressBar(int x, int y, int w, int h, int pct, bool active, uint32_t trackColor, uint32_t fillColor) {
@@ -846,9 +859,12 @@ struct UI {
         }
 
         if (keyboard) {
-            const char* keys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
+            const char* lowerKeys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
+            const char* shiftKeys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@_-*";
+            const char* keys = kbShift ? shiftKeys : lowerKeys;
             const int totalKeys = 45; // 41 chars + Space(41), Back(42), Clear(43), OK(44)
-            if (a == BACK) { keyboard = false; kbTarget = KbNone; return; }
+            if (a == BACK) { keyboard = false; kbTarget = KbNone; kbShift = false; return; }
+            if (a == FAVORITE) { kbShift = !kbShift; return; }
             if (a == LEFT) key = (key + totalKeys - 1) % totalKeys;
             else if (a == RIGHT) key = (key + 1) % totalKeys;
             else if (a == UP) key = (key + totalKeys - 9) % totalKeys;
@@ -866,18 +882,28 @@ struct UI {
                     } else if (kbTarget == KbServer) {
                         newServerUrl = kbBuffer;
                         serverSaveRequest = true;
+                    } else if (kbTarget == KbLoginUser) {
+                        loginUser = kbBuffer;
+                        loginError.clear();
+                        if (loginPass.empty()) loginField = 1;
+                    } else if (kbTarget == KbLoginPass) {
+                        loginPass = kbBuffer;
+                        loginError.clear();
+                        loginField = 2;
                     }
                     keyboard = false;
                     kbTarget = KbNone;
+                    kbShift = false;
                 }
             }
             return;
         }
 
         if (serverPicker) {
+            int nOpts = loggedUsername.empty() ? 4 : 5;
             if (a == BACK) { serverPicker = false; return; }
-            if (a == UP) serverChoice = (serverChoice + 3) % 4;
-            else if (a == DOWN) serverChoice = (serverChoice + 1) % 4;
+            if (a == UP) serverChoice = (serverChoice + nOpts - 1) % nOpts;
+            else if (a == DOWN) serverChoice = (serverChoice + 1) % nOpts;
             else if (a == CONFIRM) {
                 serverPicker = false;
                 if (serverChoice == 0) {
@@ -888,6 +914,55 @@ struct UI {
                     serverSyncRequest = true;
                 } else if (serverChoice == 2) {
                     serverResetRequest = true;
+                } else if (serverChoice == 3 && !loggedUsername.empty()) {
+                    logoutRequest = true;
+                }
+            }
+            return;
+        }
+
+        if (loginScreen) {
+            if (a == SERVER_CONFIG) {
+                serverPicker = true;
+                serverChoice = 0;
+                return;
+            }
+            if (a == REFRESH) {
+                serverSyncRequest = true;
+                return;
+            }
+            if (loginSubmitting) return;
+            if (a == UP || a == TAB_PREV) { loginField = (loginField + 3) % 4; return; }
+            if (a == DOWN || a == TAB_NEXT) { loginField = (loginField + 1) % 4; return; }
+            if (a == SEARCH) {
+                if (loginUser.empty()) {
+                    keyboard = true; kbTarget = KbLoginUser; kbBuffer = loginUser; key = 0; kbShift = false;
+                } else if (loginPass.empty()) {
+                    keyboard = true; kbTarget = KbLoginPass; kbBuffer = loginPass; key = 0; kbShift = false;
+                } else {
+                    loginError.clear();
+                    loginSubmitting = true;
+                    loginSubmitRequest = true;
+                }
+                return;
+            }
+            if (a == CONFIRM) {
+                if (loginField == 0) {
+                    keyboard = true; kbTarget = KbLoginUser; kbBuffer = loginUser; key = 0; kbShift = false;
+                } else if (loginField == 1) {
+                    keyboard = true; kbTarget = KbLoginPass; kbBuffer = loginPass; key = 0; kbShift = false;
+                } else if (loginField == 2) {
+                    if (loginUser.empty() || loginPass.empty()) {
+                        loginError = "Preencha usuário e senha para entrar.";
+                        loginField = loginUser.empty() ? 0 : 1;
+                    } else {
+                        loginError.clear();
+                        loginSubmitting = true;
+                        loginSubmitRequest = true;
+                    }
+                } else {
+                    serverPicker = true;
+                    serverChoice = 0;
                 }
             }
             return;
@@ -1097,6 +1172,74 @@ struct UI {
         const int dlTab = downloadsTab();
         c.rect(0, 0, 1920, 1080, bg);
 
+        if (loginScreen) {
+            // Painel esquerdo de marca + informações do servidor
+            c.rect(0, 0, 700, 1080, 0x08101c);
+            c.rect(700, 0, 2, 1080, 0x15253b);
+            c.image(logo, 110, 210, 108, 108);
+            c.text(storeName, 110, 385, 46, white, 540);
+            c.text(storeSubtitle, 110, 426, 22, cyan, 540);
+            c.rect(110, 462, 460, 2, 0x1a2c44);
+            c.text("Acesso protegido por usuário e senha.", 110, 514, 23, white, 540);
+            c.text("Cadastre ou gerencie contas no Painel Web (aba Usuários).", 110, 554, 19, muted, 540);
+
+            c.rounded(110, 635, 520, 150, 10, 0x0b182a);
+            c.rect(110, 635, 5, 150, cyan);
+            c.text("SERVIDOR CONECTADO", 136, 672, 16, muted, 470);
+            c.text(serverUrl, 136, 712, 22, white, 470);
+            if (syncing) {
+                c.spinner(148, 750, 9, 2, spinnerAngle(), 0x163154, 0x5cb8ff);
+                c.text("Verificando servidor...", 170, 757, 17, cyan, 430);
+            } else {
+                c.text(status, 136, 757, 17, muted, 470);
+            }
+
+            // Card principal de Login
+            c.rounded(780, 155, 1020, 745, 14, 0x0b1526);
+            c.rect(780, 155, 7, 745, cyan);
+            c.text("Entrar na Loja", 845, 232, 44, white, 880);
+            c.text("Informe as credenciais cadastradas no painel para acessar o catálogo.", 845, 274, 20, muted, 890);
+
+            // Campo 0: Usuário
+            c.text("USUÁRIO", 845, 336, 17, loginField == 0 ? cyan : muted, 300);
+            c.rounded(845, 352, 885, 64, 8, loginField == 0 ? 0x12325c : 0x060d18);
+            if (loginField == 0) c.rect(845, 352, 5, 64, cyan);
+            std::string uTxt = loginUser.empty() ? "Pressione X para digitar o usuário..." : loginUser;
+            c.text(uTxt, 868, 394, 25, loginUser.empty() ? muted : white, 840);
+
+            // Campo 1: Senha
+            c.text("SENHA", 845, 456, 17, loginField == 1 ? cyan : muted, 300);
+            c.rounded(845, 472, 885, 64, 8, loginField == 1 ? 0x12325c : 0x060d18);
+            if (loginField == 1) c.rect(845, 472, 5, 64, cyan);
+            std::string pTxt = loginPass.empty() ? "Pressione X para digitar a senha..." : maskSecret(loginPass.size());
+            c.text(pTxt, 868, 514, 25, loginPass.empty() ? muted : white, 840);
+
+            // Mensagem de erro de login
+            if (!loginError.empty()) {
+                c.rounded(845, 562, 885, 54, 8, 0x351218);
+                c.rect(845, 562, 5, 54, 0xff6b6b);
+                c.text(loginError, 868, 598, 21, 0xffb4b4, 840);
+            }
+
+            // Campo 2: Botão Entrar | Campo 3: Configurar Servidor
+            uint32_t btnBg = (loginField == 2) ? cyan : 0x15365e;
+            uint32_t btnFg = (loginField == 2) ? bg : white;
+            c.rounded(845, 650, 500, 68, 8, btnBg);
+            if (loginSubmitting) {
+                c.spinner(885, 684, 13, 3, spinnerAngle(), loginField == 2 ? 0x1a5f9e : 0x0b1f38, loginField == 2 ? bg : white);
+                c.text("Autenticando...", 916, 694, 26, btnFg, 400);
+            } else {
+                c.text("X  Entrar na Loja", 878, 694, 26, btnFg, 440);
+            }
+
+            uint32_t srvBg = (loginField == 3) ? cyan : 0x112540;
+            uint32_t srvFg = (loginField == 3) ? bg : white;
+            c.rounded(1370, 650, 360, 68, 8, srvBg);
+            c.text("L3  Alterar Servidor", 1400, 694, 23, srvFg, 310);
+
+            c.text("D-pad  Mover     X  Editar / Entrar     TRIÂNGULO  Entrar rápido     L3  Servidor     OPTIONS  Atualizar",
+                   845, 815, 19, muted, 900);
+        } else {
         // Cabeçalho superior compacto
         c.rect(315, 0, 1605, 114, 0x080e18);
         c.rect(315, 113, 1605, 1, 0x1a2638);
@@ -1146,13 +1289,24 @@ struct UI {
             c.text(countStr, 240, y - 1, 17, active ? cyan : muted, 52);
         }
 
-        // Info do Servidor na barra lateral
-        c.rect(24, 750, 266, 1, rule);
-        c.text("L1 / R1  Categoria", 32, 790, 18, muted, 260);
-        c.text("L3  Servidor:", 32, 830, 18, cyan, 260);
-        c.text(urlHostLabel(serverUrl), 32, 860, 21, white, 265);
-        c.text("OPTIONS  Sincronizar", 32, 902, 18, muted, 260);
-        c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 955, 19, muted, 265);
+        // Info do Servidor & Conta na barra lateral
+        if (!loggedUsername.empty()) {
+            c.rect(24, 738, 266, 1, rule);
+            std::string who = loggedDisplayName.empty() ? loggedUsername : loggedDisplayName;
+            c.text("CONTA: " + who, 32, 770, 17, 0x34d399, 265);
+            c.text("L1 / R1  Categoria", 32, 804, 18, muted, 260);
+            c.text("L3  Servidor / Conta:", 32, 840, 18, cyan, 260);
+            c.text(urlHostLabel(serverUrl), 32, 870, 21, white, 265);
+            c.text("OPTIONS  Sincronizar", 32, 910, 18, muted, 260);
+            c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 956, 19, muted, 265);
+        } else {
+            c.rect(24, 750, 266, 1, rule);
+            c.text("L1 / R1  Categoria", 32, 790, 18, muted, 260);
+            c.text("L3  Servidor:", 32, 830, 18, cyan, 260);
+            c.text(urlHostLabel(serverUrl), 32, 860, 21, white, 265);
+            c.text("OPTIONS  Sincronizar", 32, 902, 18, muted, 260);
+            c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 955, 19, muted, 265);
+        }
 
         // Cabeçalho principal
         c.text(storeName + " /", 352, 52, 20, cyan, 260);
@@ -1483,37 +1637,54 @@ struct UI {
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }
+        } // fim da tela principal (!loginScreen)
 
-        // Modal Configurar Servidor
+        // Modal Configurar Servidor / Conta
         if (serverPicker) {
-            c.rect(365, 230, 1230, 640, 0x091c34);
-            c.rect(365, 230, 7, 640, cyan);
-            c.text("Painel Web de Sincronização", 420, 295, 40, white);
-            c.text("Servidor atual: " + serverUrl, 420, 348, 24, cyan, 1120);
-            c.text("Sincroniza categorias, links de .pkg e capas diretamente do seu painel.", 420, 390, 22, muted, 1120);
-            const char* opts[] = {
+            int nOpts = loggedUsername.empty() ? 4 : 5;
+            int modalH = loggedUsername.empty() ? 640 : 720;
+            c.rect(365, 210, 1230, modalH, 0x091c34);
+            c.rect(365, 210, 7, modalH, cyan);
+            c.text("Painel Web de Sincronização", 420, 275, 40, white);
+            c.text("Servidor atual: " + serverUrl, 420, 326, 24, cyan, 1120);
+            if (!loggedUsername.empty()) {
+                c.text("Usuário logado: " + (loggedDisplayName.empty() ? loggedUsername : loggedDisplayName + " (" + loggedUsername + ")"),
+                       420, 362, 20, 0x34d399, 1120);
+            } else {
+                c.text("Sincroniza categorias, links de .pkg e capas diretamente do seu painel.", 420, 362, 22, muted, 1120);
+            }
+            std::string logoutOpt = "Trocar usuário / Sair da conta (" + loggedUsername + ")";
+            const char* opts[5] = {
                 "Editar IP / URL do servidor (Teclado PS4)",
                 "Sincronizar catálogo agora",
                 "Restaurar padrão (http://192.168.1.2:8765)",
+                loggedUsername.empty() ? "Voltar" : logoutOpt.c_str(),
                 "Voltar"
             };
-            for (int i = 0; i < 4; ++i) {
-                int y = 440 + i * 82;
+            for (int i = 0; i < nOpts; ++i) {
+                int y = 415 + i * 82;
                 c.rect(420, y, 1120, 64, i == serverChoice ? cyan : 0x12325c);
                 c.text(opts[i], 448, y + 43, 26, i == serverChoice ? bg : white, 1060);
             }
-            c.text("X  Selecionar     CÍRCULO  Fechar", 420, 825, 24, muted);
+            c.text("X  Selecionar     CÍRCULO  Fechar", 420, 210 + modalH - 42, 24, muted);
         }
 
-        // Teclado Virtual Fallback (Busca ou URL)
+        // Teclado Virtual Fallback (Busca, URL ou Login)
         if (keyboard) {
             c.rect(350, 205, 1260, 745, 0x091c34);
             c.rect(350, 205, 7, 745, cyan);
-            c.text(kbTarget == KbServer ? "Endereço do Painel Web" : "Buscar Homebrew", 400, 265, 38, white);
+            const char* kbTitle = (kbTarget == KbServer) ? "Endereço do Painel Web"
+                                : (kbTarget == KbLoginUser) ? "Usuário da Loja"
+                                : (kbTarget == KbLoginPass) ? "Senha da Loja"
+                                : "Buscar Homebrew";
+            c.text(kbTitle, 400, 265, 38, white);
             c.rect(400, 295, 1150, 62, 0x050912);
-            c.text(kbBuffer + "_", 422, 338, 30, white, 1100);
+            std::string dispBuf = (kbTarget == KbLoginPass) ? maskSecret(kbBuffer.size()) : kbBuffer;
+            c.text(dispBuf + "_", 422, 338, 30, white, 1100);
 
-            const char* keys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
+            const char* lowerKeys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
+            const char* shiftKeys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@_-*";
+            const char* keys = kbShift ? shiftKeys : lowerKeys;
             for (int i = 0; i < 45; ++i) {
                 int x = 400 + (i % 9) * 128;
                 int y = 390 + (i / 9) * 86;
@@ -1526,7 +1697,9 @@ struct UI {
                 else label = "OK";
                 c.text(label, x + 12, y + 45, i < 41 ? 30 : 21, i == key ? bg : white, 100);
             }
-            c.text("D-pad  Mover     X  Digitar     CÍRCULO  Fechar", 400, 890, 24, muted);
+            c.text(kbShift ? "D-pad  Mover     X  Digitar     QUADRADO  Minúsc.     CÍRCULO  Fechar"
+                           : "D-pad  Mover     X  Digitar     QUADRADO  Maiúsc./@     CÍRCULO  Fechar",
+                   400, 890, 22, muted, 1150);
         }
 
         // Modal Gerenciar / Excluir Arquivos Baixados nos Caminhos Pré-Selecionados

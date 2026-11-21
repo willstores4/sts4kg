@@ -412,6 +412,78 @@ int main() {
 
     unlink("build/test-data/favorites.txt");
     rmdir("build/test-data");
-    std::cout << "Catalog JSON parser, round-trip, categories, search, install actions and UI rendering passed.\n";
+
+    // Testar helpers JSON e sessão de autenticação do aplicativo
+    AppAuthInfo authInfo;
+    assert(parseAppAuthInfoJson(R"({
+        "login_required": true,
+        "authenticated": false,
+        "store_name": "WILLGAME Store",
+        "store_subtitle": "Painel VIP",
+        "user": {"username": "cliente01", "display_name": "Cliente Um"}
+    })", authInfo));
+    assert(authInfo.loginRequired && !authInfo.authenticated);
+    assert(authInfo.storeName == "WILLGAME Store" && authInfo.username == "cliente01" && authInfo.displayName == "Cliente Um");
+
+    AppSession sess;
+    std::string loginParseErr;
+    assert(parseAppLoginJson(R"({"ok":true,"token":"tok_abc123","user":{"username":"u1","display_name":"Usuario 1"}})", sess, loginParseErr));
+    assert(sess.token == "tok_abc123" && sess.username == "u1" && sess.displayName == "Usuario 1");
+    sess.serverUrl = "http://192.168.1.2:8765";
+    AppSession sessRound = loadAppSession(serializeAppSession(sess));
+    assert(sessRound.serverUrl == sess.serverUrl && sessRound.token == sess.token &&
+           sessRound.username == sess.username && sessRound.displayName == sess.displayName);
+
+    assert(buildLoginJson("a\"b", "p\\w") == "{\"username\":\"a\\\"b\",\"password\":\"p\\\\w\"}");
+    assert(parseApiErrorJson(R"({"error":"Usuário bloqueado"})") == "Usuário bloqueado");
+
+    // Testar fluxo da tela de login na UI e teclado fallback com maiúsculas
+    ui.loginScreen = true;
+    ui.loginField = 0;
+    ui.loginUser.clear();
+    ui.loginPass.clear();
+    ui.action(CONFIRM); // abre teclado para usuário
+    assert(ui.keyboard && ui.kbTarget == UI::KbLoginUser);
+    ui.action(FAVORITE); // ativa Shift (maiúsculas/símbolos)
+    assert(ui.kbShift);
+    ui.key = 0; // 'A'
+    ui.action(CONFIRM);
+    ui.key = 44; // OK
+    ui.action(CONFIRM);
+    assert(!ui.keyboard && ui.loginUser == "A" && ui.loginField == 1);
+
+    ui.action(CONFIRM); // abre teclado para senha
+    assert(ui.keyboard && ui.kbTarget == UI::KbLoginPass);
+    ui.key = 1; // 'b'
+    ui.action(CONFIRM);
+    ui.key = 44; // OK
+    ui.action(CONFIRM);
+    assert(!ui.keyboard && ui.loginPass == "b" && ui.loginField == 2);
+
+    ui.loginError = "Erro anterior";
+    ui.draw();
+    assert(ui.c.pixels.size() == 1920 * 1080);
+
+    ui.action(CONFIRM); // botão Entrar
+    assert(ui.loginSubmitRequest && ui.loginSubmitting && ui.hasSpinnerActivity());
+    ui.loginSubmitRequest = false;
+    ui.loginSubmitting = false;
+
+    // Login bem-sucedido e opção de sair da conta no menu Servidor
+    ui.loginScreen = false;
+    ui.loggedUsername = "cliente01";
+    ui.loggedDisplayName = "Cliente Um";
+    ui.draw();
+    ui.action(SERVER_CONFIG);
+    assert(ui.serverPicker);
+    ui.draw();
+    ui.action(DOWN); // 1 Sincronizar
+    ui.action(DOWN); // 2 Restaurar padrão
+    ui.action(DOWN); // 3 Trocar usuário / Sair da conta
+    ui.action(CONFIRM);
+    assert(ui.logoutRequest && !ui.serverPicker);
+    ui.logoutRequest = false;
+
+    std::cout << "Catalog JSON parser, round-trip, auth flow, login screen and UI rendering passed.\n";
     return 0;
 }

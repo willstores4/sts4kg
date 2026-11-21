@@ -128,29 +128,32 @@ static std::string findResponseHeader(const std::string& allHeaders, const std::
     return allHeaders.substr(p, end - p);
 }
 
-static bool performGet(const std::string& initial, std::string* outMemory, size_t cap,
-                       const std::string& referer, const std::string& rangeHeader, bool capPartialOk,
-                       const std::string& destFile, bool appendMode, uint64_t expectedBytes,
-                       PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
-                       std::string& errorOut) {
+static bool performHttp(bool isPost, const std::string& initial, const std::string& reqBody,
+                        const std::string& contentType, const std::string& authToken,
+                        std::string* outMemory, size_t cap, bool captureErrorBody,
+                        const std::string& referer, const std::string& rangeHeader, bool capPartialOk,
+                        const std::string& destFile, bool appendMode, uint64_t expectedBytes,
+                        PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
+                        int* httpCodeOut, std::string& errorOut) {
     errorOut.clear();
+    if (httpCodeOut) *httpCodeOut = 0;
     if (outMemory) outMemory->clear();
     if (!portalNetworkInit()) {
         errorOut = "Falha ao inicializar rede PS4";
-        portalNetworkTrace("GET failed host=%s reason=network_init", networkHost(initial).c_str());
+        portalNetworkTrace("%s failed host=%s reason=network_init", isPost ? "POST" : "GET", networkHost(initial).c_str());
         return false;
     }
     std::string url = initial;
     for (int hop = 0; hop < 6; hop++) {
         if (!isHttpUrl(url)) {
             errorOut = "URL inválida";
-            portalNetworkTrace("GET failed host=%s hop=%d reason=invalid_url", networkHost(url).c_str(), hop);
+            portalNetworkTrace("%s failed host=%s hop=%d reason=invalid_url", isPost ? "POST" : "GET", networkHost(url).c_str(), hop);
             return false;
         }
         int t = sceHttpCreateTemplate(http, "HBStore/1.0", ORBIS_HTTP_VERSION_1_1, 1);
         if (t < 0) {
             errorOut = "Erro interno HTTP (template)";
-            portalNetworkTrace("GET failed host=%s hop=%d reason=create_template result=%d", networkHost(url).c_str(), hop, t);
+            portalNetworkTrace("%s failed host=%s hop=%d reason=create_template result=%d", isPost ? "POST" : "GET", networkHost(url).c_str(), hop, t);
             return false;
         }
         int co = -1, r = -1, code = 0, sendResult = -1, readFailure = 0;
@@ -165,13 +168,17 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
         co = sceHttpCreateConnectionWithURL(t, url.c_str(), 1);
         if (co >= 0) {
             failure = "create_request";
-            r = sceHttpCreateRequestWithURL(co, ORBIS_METHOD_GET, url.c_str(), 0);
+            r = sceHttpCreateRequestWithURL(co, isPost ? ORBIS_METHOD_POST : ORBIS_METHOD_GET,
+                                            url.c_str(), isPost ? (uint64_t)reqBody.size() : 0);
             if (r >= 0) {
                 failure = "send_request";
                 sceHttpAddRequestHeader(r, "Accept-Encoding", "identity", 0);
                 if (!referer.empty()) sceHttpAddRequestHeader(r, "Referer", referer.c_str(), 0);
+                if (!authToken.empty()) sceHttpAddRequestHeader(r, "X-App-Token", authToken.c_str(), 0);
+                if (!contentType.empty()) sceHttpAddRequestHeader(r, "Content-Type", contentType.c_str(), 0);
                 if (!rangeHeader.empty()) sceHttpAddRequestHeader(r, "Range", rangeHeader.c_str(), 0);
-                sendResult = sceHttpSendRequest(r, 0, 0);
+                sendResult = sceHttpSendRequest(
+                    r, (isPost && !reqBody.empty()) ? reqBody.data() : nullptr, isPost ? reqBody.size() : 0);
                 if (sendResult < 0) {
                     int nativeErrno = 0, sslCode = 0;
                     uint32_t verify = 0;
@@ -190,6 +197,7 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                 } else {
                     failure = "get_status";
                     int statusResult = sceHttpGetStatusCode(r, &code);
+                    if (statusResult >= 0 && httpCodeOut) *httpCodeOut = code;
                     char* headers = 0;
                     size_t headerSize = 0;
                     std::string allHeaders;
@@ -294,8 +302,18 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                         if (!location.empty()) failure = "redirect";
                     } else if (statusResult >= 0) {
                         failure = "http_status";
+                        if (captureErrorBody && outMemory && code >= 400) {
+                            char errBuf[1024];
+                            size_t errCap = std::min<size_t>(cap, 16384);
+                            while (outMemory->size() < errCap) {
+                                int n = sceHttpReadData(r, errBuf, sizeof errBuf);
+                                if (n <= 0) break;
+                                size_t take = std::min<size_t>((size_t)n, errCap - outMemory->size());
+                                outMemory->append(errBuf, take);
+                            }
+                        }
                         if (code == 401 || code == 403) {
-                            errorOut = "Servidor bloqueou o acesso — ative o Proxy no painel";
+                            errorOut = "Acesso negado ou login necessário (HTTP " + std::to_string(code) + ")";
                         } else if (code == 404 || code == 410) {
                             errorOut = "Arquivo PKG não encontrado no servidor";
                         } else if (code == 416) {
@@ -305,7 +323,7 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                         } else if (code >= 500) {
                             errorOut = "Servidor do arquivo indisponível no momento";
                         } else {
-                            errorOut = "Servidor recusou a entrega do arquivo";
+                            errorOut = "Servidor recusou a solicitação (HTTP " + std::to_string(code) + ")";
                         }
                     }
                 }
@@ -316,17 +334,17 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
         sceHttpDeleteTemplate(t);
 
         if (ok) {
-            portalNetworkTrace("GET ok host=%s hop=%d status=%d", networkHost(url).c_str(), hop, code);
+            portalNetworkTrace("%s ok host=%s hop=%d status=%d", isPost ? "POST" : "GET", networkHost(url).c_str(), hop, code);
             return true;
         }
-        if (outMemory) outMemory->clear();
+        if (outMemory && !(captureErrorBody && failure == "http_status")) outMemory->clear();
         if (!location.empty()) {
-            portalNetworkTrace("GET redirect host=%s hop=%d status=%d", networkHost(url).c_str(), hop, code);
+            portalNetworkTrace("%s redirect host=%s hop=%d status=%d", isPost ? "POST" : "GET", networkHost(url).c_str(), hop, code);
             url = redirectURL(url, location);
             continue;
         }
-        portalNetworkTrace("GET failed host=%s hop=%d reason=%s status=%d send=%d read=%d",
-                           networkHost(url).c_str(), hop, failure.c_str(), code, sendResult, readFailure);
+        portalNetworkTrace("%s failed host=%s hop=%d reason=%s status=%d send=%d read=%d",
+                           isPost ? "POST" : "GET", networkHost(url).c_str(), hop, failure.c_str(), code, sendResult, readFailure);
         if (errorOut.empty()) {
             if (failure == "redirect_without_location") {
                 errorOut = "Servidor enviou redirecionamento inválido";
@@ -337,30 +355,40 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
         return false;
     }
     errorOut = "Limite de redirecionamentos excedido";
-    portalNetworkTrace("GET failed host=%s reason=redirect_limit", networkHost(url).c_str());
+    portalNetworkTrace("%s failed host=%s reason=redirect_limit", isPost ? "POST" : "GET", networkHost(url).c_str());
     return false;
 }
 
 bool portalNetworkFetch(const std::string& initial, std::string& out, size_t cap, const std::string& referer) {
     std::string err;
-    return performGet(initial, &out, cap, referer, "", false, "", false, 0, nullptr, nullptr, nullptr, err);
+    return performHttp(false, initial, "", "", "", &out, cap, false, referer, "", false, "", false, 0, nullptr, nullptr, nullptr, nullptr, err);
+}
+
+bool portalNetworkFetchAuth(const std::string& url, const std::string& authToken, std::string& out, size_t cap,
+                            int& httpCodeOut, std::string& error) {
+    return performHttp(false, url, "", "", authToken, &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
+}
+
+bool portalNetworkPostJson(const std::string& url, const std::string& jsonBody, const std::string& authToken,
+                           std::string& out, size_t cap, int& httpCodeOut, std::string& error) {
+    return performHttp(true, url, jsonBody, "application/json; charset=utf-8", authToken, &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
 }
 
 bool portalNetworkFetchRange(const std::string& url, std::string& out, uint64_t offset, size_t length, std::string& error) {
     std::string range = "bytes=" + std::to_string(offset) + "-" + std::to_string(offset + length - 1);
-    return performGet(url, &out, length, "", range, true, "", false, 0, nullptr, nullptr, nullptr, error);
+    return performHttp(false, url, "", "", "", &out, length, false, "", range, true, "", false, 0, nullptr, nullptr, nullptr, nullptr, error);
 }
 
 bool portalNetworkDownloadFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                                PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                                std::string& error) {
-    return performGet(url, nullptr, 0, "", "", false, destPath, false, expectedBytes, progressCb, stopCb, user, error);
+    return performHttp(false, url, "", "", "", nullptr, 0, false, "", "", false, destPath, false, expectedBytes, progressCb, stopCb, user, nullptr, error);
 }
 
 bool portalNetworkAppendFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                              PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                              std::string& error) {
-    return performGet(url, nullptr, 0, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, error);
+    return performHttp(false, url, "", "", "", nullptr, 0, false, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, nullptr, error);
 }
 
 extern "C" int nbNetSocket(const char*, int, int, int) __asm__("sceNetSocket");

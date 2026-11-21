@@ -19,9 +19,16 @@
 static std::string DATA;
 static pthread_mutex_t syncLock = PTHREAD_MUTEX_INITIALIZER;
 static bool syncWorking = false, syncReady = false;
-static std::string syncStatusMsg, syncServerUrl;
+static std::string syncStatusMsg, syncServerUrl, syncToken;
 static CatalogData syncedCatalog;
 static bool clearCoversOnPublish = false;
+
+static bool syncAuthRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
+static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
+
+static bool loginWorking = false, loginDone = false, loginOk = false;
+static std::string loginReqServer, loginReqUser, loginReqPass, loginResultErr;
+static AppSession loginResultSession;
 
 static void setSyncStatus(const std::string& s) {
     pthread_mutex_lock(&syncLock);
@@ -49,17 +56,58 @@ static void cleanStaleCovers(const std::string& coversDir, const std::vector<Gam
 static void* syncThread(void*) {
     pthread_mutex_lock(&syncLock);
     std::string server = syncServerUrl;
+    std::string token = syncToken;
     pthread_mutex_unlock(&syncLock);
 
     setSyncStatus("Sincronizando com " + urlHostLabel(server) + "...");
     std::string body;
     std::string baseUrl = serverBaseFromCatalogUrl(server);
+
+    if (!endsWithJson(server)) {
+        std::string authBody, authErr;
+        int authCode = 0;
+        if (portalNetworkFetchAuth(baseUrl + "/api/app/auth-info", token, authBody, 64 * 1024, authCode, authErr)) {
+            AppAuthInfo ai;
+            if (parseAppAuthInfoJson(authBody, ai)) {
+                pthread_mutex_lock(&syncLock);
+                if (!ai.storeName.empty()) syncStoreName = ai.storeName;
+                if (!ai.storeSubtitle.empty()) syncStoreSubtitle = ai.storeSubtitle;
+                if (ai.loginRequired && !ai.authenticated) {
+                    syncAuthRequired = true;
+                    syncClearSession = !token.empty();
+                    syncAuthMessage = token.empty() ? "" : "Sessão expirada ou bloqueada. Entre novamente.";
+                    syncStatusMsg = "Login necessário (" + urlHostLabel(server) + ")";
+                    syncWorking = false;
+                    pthread_mutex_unlock(&syncLock);
+                    return nullptr;
+                }
+                if (!ai.loginRequired) syncAllowBypassLogin = true;
+                pthread_mutex_unlock(&syncLock);
+            }
+        }
+    }
+
+    int catCode = 0;
+    std::string catErr;
     bool fetched = false;
     if (endsWithJson(server)) {
-        fetched = portalNetworkFetch(server, body, 8 * 1024 * 1024);
+        fetched = portalNetworkFetchAuth(server, token, body, 8 * 1024 * 1024, catCode, catErr);
     } else {
-        fetched = portalNetworkFetch(server + "/api/catalog.json", body, 8 * 1024 * 1024) ||
-                  portalNetworkFetch(server + "/catalog.json", body, 8 * 1024 * 1024);
+        fetched = portalNetworkFetchAuth(server + "/api/catalog.json", token, body, 8 * 1024 * 1024, catCode, catErr);
+        if (!fetched && catCode != 401 && catCode != 403) {
+            fetched = portalNetworkFetchAuth(server + "/catalog.json", token, body, 8 * 1024 * 1024, catCode, catErr);
+        }
+    }
+    if (!fetched && (catCode == 401 || catCode == 403)) {
+        std::string apiErr = parseApiErrorJson(body);
+        pthread_mutex_lock(&syncLock);
+        syncAuthRequired = true;
+        syncClearSession = !token.empty();
+        syncAuthMessage = !apiErr.empty() ? apiErr : "Faça login para acessar a loja.";
+        syncStatusMsg = "Login necessário (" + urlHostLabel(server) + ")";
+        syncWorking = false;
+        pthread_mutex_unlock(&syncLock);
+        return nullptr;
     }
     if (!fetched) {
         setSyncStatus("Servidor offline (" + urlHostLabel(server) + ") | Cache local mantido");
@@ -136,7 +184,7 @@ static void* syncThread(void*) {
     return nullptr;
 }
 
-static void startSync(const std::string& serverUrl) {
+static void startSync(const std::string& serverUrl, const std::string& token = "") {
     pthread_mutex_lock(&syncLock);
     if (syncWorking) {
         pthread_mutex_unlock(&syncLock);
@@ -144,6 +192,7 @@ static void startSync(const std::string& serverUrl) {
     }
     syncWorking = true;
     syncServerUrl = serverUrl;
+    syncToken = token;
     pthread_mutex_unlock(&syncLock);
 
     pthread_t th;
@@ -154,6 +203,98 @@ static void startSync(const std::string& serverUrl) {
         syncWorking = false;
         syncStatusMsg = "Erro ao iniciar sincronização; tente com OPTIONS.";
         pthread_mutex_unlock(&syncLock);
+    }
+}
+
+static void* loginThread(void*) {
+    pthread_mutex_lock(&syncLock);
+    std::string server = loginReqServer;
+    std::string user = loginReqUser;
+    std::string pass = loginReqPass;
+    loginReqPass.clear();
+    pthread_mutex_unlock(&syncLock);
+
+    std::string baseUrl = serverBaseFromCatalogUrl(server);
+    std::string respBody, netErr;
+    int httpCode = 0;
+    bool posted = portalNetworkPostJson(
+        baseUrl + "/api/app/login", buildLoginJson(user, pass), "", respBody, 64 * 1024, httpCode, netErr);
+
+    AppSession sess;
+    std::string errMsg;
+    bool ok = false;
+    if (posted) {
+        ok = parseAppLoginJson(respBody, sess, errMsg);
+        if (ok) {
+            sess.serverUrl = server;
+            if (sess.username.empty()) sess.username = user;
+            writeFile(DATA + "/session.tsv", serializeAppSession(sess));
+        }
+    } else {
+        std::string apiErr = parseApiErrorJson(respBody);
+        errMsg = !apiErr.empty() ? apiErr : (!netErr.empty() ? netErr : "Falha ao conectar ao servidor de login.");
+    }
+
+    pthread_mutex_lock(&syncLock);
+    loginWorking = false;
+    loginDone = true;
+    loginOk = ok;
+    loginResultErr = errMsg;
+    loginResultSession = sess;
+    pthread_mutex_unlock(&syncLock);
+    return nullptr;
+}
+
+static void startLogin(const std::string& serverUrl, const std::string& user, const std::string& pass) {
+    pthread_mutex_lock(&syncLock);
+    if (loginWorking) {
+        pthread_mutex_unlock(&syncLock);
+        return;
+    }
+    loginWorking = true;
+    loginDone = false;
+    loginReqServer = serverUrl;
+    loginReqUser = user;
+    loginReqPass = pass;
+    pthread_mutex_unlock(&syncLock);
+
+    pthread_t th;
+    if (pthread_create(&th, nullptr, loginThread, nullptr) == 0) {
+        pthread_detach(th);
+    } else {
+        pthread_mutex_lock(&syncLock);
+        loginWorking = false;
+        loginDone = true;
+        loginOk = false;
+        loginResultErr = "Não foi possível iniciar autenticação.";
+        pthread_mutex_unlock(&syncLock);
+    }
+}
+
+struct LogoutArgs {
+    std::string url;
+    std::string token;
+};
+
+static void* logoutThread(void* raw) {
+    LogoutArgs* args = static_cast<LogoutArgs*>(raw);
+    if (args) {
+        std::string out, err;
+        int code = 0;
+        portalNetworkPostJson(args->url, "{}", args->token, out, 4096, code, err);
+        delete args;
+    }
+    return nullptr;
+}
+
+static void startLogoutAsync(const std::string& serverUrl, const std::string& token) {
+    if (token.empty()) return;
+    LogoutArgs* args = new LogoutArgs{serverBaseFromCatalogUrl(serverUrl) + "/api/app/logout", token};
+    pthread_t th;
+    if (pthread_create(&th, nullptr, logoutThread, args) == 0) {
+        pthread_detach(th);
+    } else {
+        delete args;
     }
 }
 
@@ -193,7 +334,17 @@ int main() {
     UI::KeyboardTarget nativeTarget = UI::KbNone;
     bool keyboardFallback = false, waitPadRelease = false;
 
-    startSync(ui.serverUrl);
+    std::string activeToken;
+    AppSession savedSess = loadAppSession(readFile(DATA + "/session.tsv"));
+    if (!savedSess.token.empty() && savedSess.serverUrl == ui.serverUrl) {
+        activeToken = savedSess.token;
+        ui.loggedUsername = savedSess.username;
+        ui.loggedDisplayName = savedSess.displayName;
+    } else if (!savedSess.username.empty()) {
+        ui.loginUser = savedSess.username;
+    }
+
+    startSync(ui.serverUrl, activeToken);
 
     for (int frame = 0;; ++frame) {
         OrbisPadData p = {};
@@ -252,14 +403,18 @@ int main() {
 
             const int dlTab = ui.downloadsTab();
             if (edge & ORBIS_PAD_BUTTON_L3) {
-                if ((ui.detail || ui.tab == dlTab) && !ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
+                if (ui.loginScreen && !ui.keyboard && !ui.serverPicker) {
+                    ui.action(SERVER_CONFIG);
+                } else if ((ui.detail || ui.tab == dlTab) && !ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
                     ui.action(LOCAL_INSTALL);
                 } else if (ui.tab != dlTab && !ui.detail && !ui.keyboard && !ui.serverPicker && !ui.filesModal && !ui.deleteConfirm) {
                     ui.action(SERVER_CONFIG);
                 }
             }
             if (edge & ORBIS_PAD_BUTTON_OPTIONS) {
-                if (ui.filesModal && !ui.deleteConfirm) {
+                if (ui.loginScreen && !ui.keyboard && !ui.serverPicker) {
+                    startSync(ui.serverUrl, activeToken);
+                } else if (ui.filesModal && !ui.deleteConfirm) {
                     ui.action(REFRESH);
                 } else if (ui.tab == dlTab && !ui.deleteConfirm) {
                     ui.action(REMOVE_TASK);
@@ -274,18 +429,27 @@ int main() {
                             ui.dirty = true;
                         }
                     }
-                    startSync(ui.serverUrl);
+                    startSync(ui.serverUrl, activeToken);
                 }
             }
         }
 
-        // Teclado nativo PS4 para Busca ou URL do Servidor
+        // Teclado nativo PS4 para Busca, URL do Servidor ou Login
         if (!ui.keyboard && !ui.serverEditRequest) keyboardFallback = false;
         if ((ui.keyboard || ui.serverEditRequest) && !keyboardFallback && !textInput.isOpen()) {
             UI::KeyboardTarget reqTarget = ui.serverEditRequest ? UI::KbServer : ui.kbTarget;
-            std::string initial = (reqTarget == UI::KbServer) ? ui.serverUrl : ui.query;
-            std::string title = (reqTarget == UI::KbServer) ? "Endereço do Painel Web" : "Buscar homebrew";
-            std::string ph = (reqTarget == UI::KbServer) ? "http://192.168.1.2:8765" : "Nome do homebrew";
+            std::string initial = (reqTarget == UI::KbServer) ? ui.serverUrl
+                                : (reqTarget == UI::KbLoginUser) ? ui.loginUser
+                                : (reqTarget == UI::KbLoginPass) ? ui.loginPass
+                                : ui.query;
+            std::string title = (reqTarget == UI::KbServer) ? "Endereço do Painel Web"
+                              : (reqTarget == UI::KbLoginUser) ? "Usuário da Loja"
+                              : (reqTarget == UI::KbLoginPass) ? "Senha da Loja"
+                              : "Buscar homebrew";
+            std::string ph = (reqTarget == UI::KbServer) ? "http://192.168.1.2:8765"
+                           : (reqTarget == UI::KbLoginUser) ? "Digite seu usuário"
+                           : (reqTarget == UI::KbLoginPass) ? "Digite sua senha"
+                           : "Nome do homebrew";
             bool urlMode = (reqTarget == UI::KbServer);
 
             ui.keyboard = false;
@@ -295,6 +459,7 @@ int main() {
                 ui.keyboard = true;
                 ui.kbTarget = reqTarget;
                 ui.kbBuffer = initial;
+                ui.kbShift = false;
                 keyboardFallback = true;
                 ui.notice = error;
             } else {
@@ -314,6 +479,14 @@ int main() {
                     if (nativeTarget == UI::KbServer) {
                         ui.newServerUrl = text;
                         ui.serverSaveRequest = true;
+                    } else if (nativeTarget == UI::KbLoginUser) {
+                        ui.loginUser = text;
+                        ui.loginError.clear();
+                        if (ui.loginPass.empty()) ui.loginField = 1;
+                    } else if (nativeTarget == UI::KbLoginPass) {
+                        ui.loginPass = text;
+                        ui.loginError.clear();
+                        ui.loginField = 2;
                     } else {
                         ui.query = text;
                         ui.selected = 0;
@@ -330,10 +503,17 @@ int main() {
         if (ui.serverResetRequest) {
             ui.serverResetRequest = false;
             unlink((DATA + "/server.txt").c_str());
-            ui.serverUrl = readDefaultServerUrl("/app0/assets", DATA);
+            std::string nextUrl = readDefaultServerUrl("/app0/assets", DATA);
+            if (nextUrl != ui.serverUrl) {
+                activeToken.clear();
+                ui.loggedUsername.clear();
+                ui.loggedDisplayName.clear();
+                unlink((DATA + "/session.tsv").c_str());
+            }
+            ui.serverUrl = nextUrl;
             ui.covers.clear();
             ui.notice = "Servidor restaurado para " + ui.serverUrl;
-            startSync(ui.serverUrl);
+            startSync(ui.serverUrl, activeToken);
             ui.dirty = true;
         }
         if (ui.serverSaveRequest) {
@@ -342,17 +522,45 @@ int main() {
             if (normalized.empty()) {
                 ui.notice = "URL inválida. Use o formato http://192.168.1.2:8765";
             } else {
+                if (normalized != ui.serverUrl) {
+                    activeToken.clear();
+                    ui.loggedUsername.clear();
+                    ui.loggedDisplayName.clear();
+                    unlink((DATA + "/session.tsv").c_str());
+                }
                 writeFile(DATA + "/server.txt", normalized + "\n");
                 ui.serverUrl = normalized;
                 ui.covers.clear();
                 ui.notice = "Servidor salvo: " + normalized;
-                startSync(ui.serverUrl);
+                startSync(ui.serverUrl, activeToken);
             }
             ui.dirty = true;
         }
         if (ui.serverSyncRequest) {
             ui.serverSyncRequest = false;
-            startSync(ui.serverUrl);
+            startSync(ui.serverUrl, activeToken);
+        }
+        if (ui.loginSubmitRequest) {
+            ui.loginSubmitRequest = false;
+            startLogin(ui.serverUrl, ui.loginUser, ui.loginPass);
+        }
+        if (ui.logoutRequest) {
+            ui.logoutRequest = false;
+            startLogoutAsync(ui.serverUrl, activeToken);
+            activeToken.clear();
+            unlink((DATA + "/session.tsv").c_str());
+            ui.loggedUsername.clear();
+            ui.loggedDisplayName.clear();
+            ui.loginPass.clear();
+            ui.loginError.clear();
+            ui.loginField = 0;
+            ui.loginScreen = true;
+            ui.detail = false;
+            ui.filesModal = false;
+            ui.deleteConfirm = false;
+            ui.tab = 0;
+            ui.notice = "Você saiu da conta.";
+            ui.dirty = true;
         }
 
         // Ações de Instalação (Notificações BGFT, Local StorageEx, BinLoader ELF ou Download Direto configurado no painel)
@@ -450,11 +658,45 @@ int main() {
             ui.dirty = true;
         }
 
-        // Atualiza UI quando sincronização termina ou baixa novas capas
+        // Atualiza UI quando sincronização/login termina ou baixa novas capas
+        bool triggerPostLoginSync = false;
         pthread_mutex_lock(&syncLock);
         bool wasSyncing = ui.syncing;
         ui.syncing = syncWorking;
         if (ui.syncing != wasSyncing) ui.dirty = true;
+        if (!syncStoreName.empty() && syncStoreName != ui.storeName) {
+            ui.storeName = syncStoreName;
+            ui.dirty = true;
+        }
+        if (!syncStoreSubtitle.empty() && syncStoreSubtitle != ui.storeSubtitle) {
+            ui.storeSubtitle = syncStoreSubtitle;
+            ui.dirty = true;
+        }
+        if (syncAllowBypassLogin) {
+            if (ui.loginScreen) {
+                ui.loginScreen = false;
+                ui.loginError.clear();
+                ui.dirty = true;
+            }
+            syncAllowBypassLogin = false;
+        }
+        if (syncAuthRequired) {
+            syncAuthRequired = false;
+            if (syncClearSession) {
+                syncClearSession = false;
+                activeToken.clear();
+                unlink((DATA + "/session.tsv").c_str());
+                ui.loggedUsername.clear();
+                ui.loggedDisplayName.clear();
+            }
+            ui.loginScreen = true;
+            ui.detail = false;
+            ui.filesModal = false;
+            ui.deleteConfirm = false;
+            if (!syncAuthMessage.empty()) ui.loginError = syncAuthMessage;
+            syncAuthMessage.clear();
+            ui.dirty = true;
+        }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
             ui.status = syncStatusMsg;
             ui.dirty = true;
@@ -469,14 +711,35 @@ int main() {
             ui.storeSubtitle = syncedCatalog.storeSubtitle;
             ui.categories = syncedCatalog.categories;
             ui.games = syncedCatalog.items;
+            ui.loginScreen = false;
             ui.filter();
             if (ui.detail) ui.refreshDetailFileProbe();
             syncReady = false;
         }
+        if (loginDone) {
+            loginDone = false;
+            ui.loginSubmitting = false;
+            if (loginOk) {
+                activeToken = loginResultSession.token;
+                ui.loggedUsername = loginResultSession.username;
+                ui.loggedDisplayName = loginResultSession.displayName;
+                ui.loginPass.clear();
+                ui.loginError.clear();
+                ui.loginScreen = false;
+                std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
+                ui.notice = "Bem-vindo, " + greet + "!";
+                triggerPostLoginSync = true;
+            } else {
+                ui.loginScreen = true;
+                ui.loginError = loginResultErr;
+            }
+            ui.dirty = true;
+        }
         pthread_mutex_unlock(&syncLock);
+        if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
 
         bool animSpin = ui.hasSpinnerActivity();
-        bool animTick = animSpin && ((ui.tab == ui.downloadsTab() || ui.detail) ? (frame & 1) == 0 : (frame % 3) == 0);
+        bool animTick = animSpin && ((ui.tab == ui.downloadsTab() || ui.detail || ui.loginScreen) ? (frame & 1) == 0 : (frame % 3) == 0);
         if (ui.dirty || animTick) {
             ui.animFrame = frame;
             ui.draw();

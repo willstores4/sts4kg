@@ -16,6 +16,22 @@ struct Category {
     std::string slug;
 };
 
+struct AppAuthInfo {
+    bool loginRequired = false;
+    bool authenticated = true;
+    std::string storeName;
+    std::string storeSubtitle;
+    std::string username;
+    std::string displayName;
+};
+
+struct AppSession {
+    std::string serverUrl;
+    std::string token;
+    std::string username;
+    std::string displayName;
+};
+
 struct GameLink {
     std::string label;
     std::string url;
@@ -976,4 +992,83 @@ inline std::vector<Game> loadCatalog(const std::string& s) {
         }
     }
     return v;
+}
+
+inline std::string buildLoginJson(const std::string& username, const std::string& password) {
+    return "{\"username\":\"" + jsonEscape(username) + "\",\"password\":\"" + jsonEscape(password) + "\"}";
+}
+
+inline std::string parseApiErrorJson(const std::string& raw) {
+    MiniJson::Value root;
+    if (!MiniJson::parse(raw, root) || root.type != MiniJson::Value::Object) return "";
+    return firstJsonString(root, {"error", "message"});
+}
+
+inline bool parseAppAuthInfoJson(const std::string& raw, AppAuthInfo& out) {
+    MiniJson::Value root;
+    if (!MiniJson::parse(raw, root) || root.type != MiniJson::Value::Object) return false;
+    out = AppAuthInfo();
+    if (auto* lr = root.get("login_required")) out.loginRequired = lr->asBool();
+    if (auto* au = root.get("authenticated")) out.authenticated = au->asBool();
+    else out.authenticated = !out.loginRequired;
+    out.storeName = firstJsonString(root, {"store_name", "storeName"});
+    out.storeSubtitle = firstJsonString(root, {"store_subtitle", "storeSubtitle"});
+    if (auto* u = root.get("user")) {
+        if (u->type == MiniJson::Value::Object) {
+            out.username = firstJsonString(*u, {"username", "user"});
+            out.displayName = firstJsonString(*u, {"display_name", "displayName"});
+        }
+    }
+    return true;
+}
+
+inline bool parseAppLoginJson(const std::string& raw, AppSession& out, std::string& errOut) {
+    errOut.clear();
+    MiniJson::Value root;
+    if (!MiniJson::parse(raw, root) || root.type != MiniJson::Value::Object) {
+        errOut = "Resposta de autenticação inválida";
+        return false;
+    }
+    std::string tok = firstJsonString(root, {"token", "access_token"});
+    if (tok.empty()) {
+        std::string apiErr = firstJsonString(root, {"error", "message"});
+        errOut = apiErr.empty() ? "Login recusado pelo servidor" : apiErr;
+        return false;
+    }
+    out = AppSession();
+    out.token = tok;
+    if (auto* u = root.get("user")) {
+        if (u->type == MiniJson::Value::Object) {
+            out.username = firstJsonString(*u, {"username", "user"});
+            out.displayName = firstJsonString(*u, {"display_name", "displayName"});
+        }
+    }
+    return true;
+}
+
+inline std::string serializeAppSession(const AppSession& s) {
+    return cleanField(s.serverUrl) + "\t" + cleanField(s.token) + "\t" +
+           cleanField(s.username) + "\t" + cleanField(s.displayName) + "\n";
+}
+
+inline AppSession loadAppSession(const std::string& raw) {
+    AppSession out;
+    size_t e = raw.find('\n');
+    std::string line = (e == std::string::npos) ? raw : raw.substr(0, e);
+    while (!line.empty() && line.back() == '\r') line.pop_back();
+    std::vector<std::string> f;
+    size_t a = 0;
+    for (;;) {
+        auto b = line.find('\t', a);
+        f.push_back(line.substr(a, b - a));
+        if (b == std::string::npos) break;
+        a = b + 1;
+    }
+    if (f.size() >= 2) {
+        out.serverUrl = f[0];
+        out.token = f[1];
+    }
+    if (f.size() >= 3) out.username = f[2];
+    if (f.size() >= 4) out.displayName = f[3];
+    return out;
 }

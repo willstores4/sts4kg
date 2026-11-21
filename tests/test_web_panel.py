@@ -772,6 +772,161 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(imp_raw)["imported"], 1)
 
+    def test_09_user_manager_and_app_login(self):
+        # 1. Sem usuários cadastrados: catálogo aberto e auth-info indica login não obrigatório
+        status, _, raw = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        info = json.loads(raw)
+        self.assertFalse(info["login_required"])
+        self.assertTrue(info["authenticated"])
+
+        # Sobe um PKG local e cria um item
+        pkg = make_fake_pkg("EP9999-USER99999_00-LOGINTEST0000001")
+        status, _, up_raw = self.request(
+            "POST",
+            "/api/admin/upload/pkg",
+            body=pkg,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "X-Filename": "login_test.pkg",
+                "Content-Length": str(len(pkg)),
+            },
+        )
+        self.assertEqual(status, 201)
+        up = json.loads(up_raw)
+        status, _, item_raw = self.request("POST", "/api/admin/homebrews", {
+            "title": "App Protegido",
+            "pkg_url": up["pkg_url"],
+            "pkg_filename": up["pkg_filename"],
+            "size_bytes": up["size_bytes"],
+            "content_id": up["content_id"],
+        })
+        self.assertEqual(status, 201)
+
+        # 2. Validações de criação de usuário + criação bem-sucedida
+        status, _, _ = self.request("POST", "/api/admin/users", {"username": "ab", "password": "12"})
+        self.assertEqual(status, 400)
+
+        status, _, u_raw = self.request("POST", "/api/admin/users", {
+            "username": "cliente01",
+            "display_name": "Cliente Um",
+            "password": "senha123",
+            "notes": "PS4 Sala",
+            "active": True,
+        })
+        self.assertEqual(status, 201)
+        user_obj = json.loads(u_raw)["user"]
+        uid = user_obj["id"]
+        self.assertEqual(user_obj["username"], "cliente01")
+        self.assertNotIn("password_hash", user_obj)
+
+        # Usuário duplicado ignorando maiúsculas/minúsculas é rejeitado
+        status, _, _ = self.request("POST", "/api/admin/users", {
+            "username": "Cliente01",
+            "password": "outra123",
+        })
+        self.assertEqual(status, 400)
+
+        # 3. Com usuário ativo (modo auto), rotas públicas passam a exigir login
+        status, _, info_raw = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        info = json.loads(info_raw)
+        self.assertTrue(info["login_required"])
+        self.assertFalse(info["authenticated"])
+
+        for protected in ("/api/catalog.json", "/catalog.json", "/api/export.json", up["pkg_url"]):
+            st, _, _ = self.request("GET", protected)
+            self.assertEqual(st, 401, msg=f"{protected} deveria exigir auth")
+
+        # Export do painel continua disponível via rota administrativa
+        status, _, adm_exp = self.request("GET", "/api/admin/export.json")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(adm_exp)["items"]), 1)
+
+        # Estado admin lista usuários sem hash
+        status, _, st_raw = self.request("GET", "/api/admin/state")
+        self.assertEqual(status, 200)
+        st_data = json.loads(st_raw)
+        self.assertTrue(st_data["app_login_required"])
+        self.assertEqual(len(st_data["users"]), 1)
+        self.assertNotIn("password_hash", st_data["users"][0])
+
+        # 4. Senha incorreta retorna 401; login válido retorna token e libera acesso
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "errada"})
+        self.assertEqual(status, 401)
+
+        status, _, login_raw = self.request("POST", "/api/app/login", {"username": "Cliente01", "password": "senha123"})
+        self.assertEqual(status, 200)
+        login_data = json.loads(login_raw)
+        tok = login_data["token"]
+        self.assertTrue(tok)
+        self.assertEqual(login_data["user"]["display_name"], "Cliente Um")
+
+        # auth-info com X-App-Token valida sessão
+        status, _, auth_ok_raw = self.request("GET", "/api/app/auth-info", headers={"X-App-Token": tok})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(auth_ok_raw)["authenticated"])
+
+        # Catálogo retorna token embutido nas URLs internas para BGFT/PS4
+        status, _, cat_raw = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok})
+        self.assertEqual(status, 200)
+        cat = json.loads(cat_raw)
+        exported_pkg_url = cat["items"][0]["pkg_url"]
+        self.assertIn(f"token={tok}", exported_pkg_url)
+        parsed_pkg = urllib.parse.urlparse(exported_pkg_url)
+        status, _, fetched_pkg = self.request("GET", f"{parsed_pkg.path}?{parsed_pkg.query}")
+        self.assertEqual(status, 200)
+        self.assertEqual(fetched_pkg, pkg)
+
+        # 5. Revogação derruba a sessão imediatamente
+        status, _, rev_raw = self.request("POST", f"/api/admin/users/{uid}/revoke")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(rev_raw)["revoked"], 1)
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok})
+        self.assertEqual(status, 401)
+
+        # 6. Bloqueio e expiração impedem login e invalidam sessões
+        status, _, login_raw2 = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        self.assertEqual(status, 200)
+        tok2 = json.loads(login_raw2)["token"]
+
+        status, _, _ = self.request("PUT", f"/api/admin/users/{uid}", {"active": False})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok2})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        self.assertEqual(status, 403)
+
+        # Reativa com data expirada
+        status, _, _ = self.request("PUT", f"/api/admin/users/{uid}", {"active": True, "expires_at": 1000})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        self.assertEqual(status, 403)
+
+        # 7. Modo '0' libera catálogo mesmo com usuários; excluir todos os usuários libera em modo 'auto'
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "Teste",
+            "require_app_login": "0",
+        })
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("GET", "/api/catalog.json")
+        self.assertEqual(status, 200)
+
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "Teste",
+            "require_app_login": "auto",
+        })
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("GET", "/api/catalog.json")
+        self.assertEqual(status, 401)
+
+        status, _, _ = self.request("DELETE", f"/api/admin/users/{uid}")
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("GET", "/api/catalog.json")
+        self.assertEqual(status, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
