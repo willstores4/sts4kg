@@ -182,7 +182,11 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                     }
                     portalNetworkTrace("request failure host=%s send=0x%08X sslQuery=0x%08X ssl=0x%08X verify=0x%08X errnoQuery=0x%08X errno=%d",
                                        networkHost(url).c_str(), (unsigned)sendResult, (unsigned)sslQuery, (unsigned)sslCode, verify, (unsigned)errnoQuery, nativeErrno);
-                    errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+                    if (((uint32_t)sendResult & 0xffff0000u) == 0x80950000u) {
+                        errorOut = "Falha na conexão segura (HTTPS) com " + networkHost(url) + " — ative o Proxy no painel";
+                    } else {
+                        errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+                    }
                 } else {
                     failure = "get_status";
                     int statusResult = sceHttpGetStatusCode(r, &code);
@@ -290,7 +294,19 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
                         if (!location.empty()) failure = "redirect";
                     } else if (statusResult >= 0) {
                         failure = "http_status";
-                        errorOut = "Servidor respondeu HTTP " + std::to_string(code);
+                        if (code == 401 || code == 403) {
+                            errorOut = "Servidor bloqueou o acesso — ative o Proxy no painel";
+                        } else if (code == 404 || code == 410) {
+                            errorOut = "Arquivo PKG não encontrado no servidor";
+                        } else if (code == 416) {
+                            errorOut = "Servidor não suportou o trecho solicitado do arquivo";
+                        } else if (code == 429) {
+                            errorOut = "Servidor sobrecarregado com muitas requisições — tente novamente";
+                        } else if (code >= 500) {
+                            errorOut = "Servidor do arquivo indisponível no momento";
+                        } else {
+                            errorOut = "Servidor recusou a entrega do arquivo";
+                        }
                     }
                 }
             }
@@ -311,7 +327,13 @@ static bool performGet(const std::string& initial, std::string* outMemory, size_
         }
         portalNetworkTrace("GET failed host=%s hop=%d reason=%s status=%d send=%d read=%d",
                            networkHost(url).c_str(), hop, failure.c_str(), code, sendResult, readFailure);
-        if (errorOut.empty()) errorOut = "Falha de rede (" + failure + ")";
+        if (errorOut.empty()) {
+            if (failure == "redirect_without_location") {
+                errorOut = "Servidor enviou redirecionamento inválido";
+            } else {
+                errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+            }
+        }
         return false;
     }
     errorOut = "Limite de redirecionamentos excedido";
@@ -396,9 +418,8 @@ bool portalNetworkSendTcp(const std::string& hostIp, uint16_t port, const std::s
     }
     int sock = nbNetSocket("WILLBinLoader", 2 /* AF_INET */, 1 /* SOCK_STREAM */, 0);
     if (sock < 0) {
-        char buf[128];
-        snprintf(buf, sizeof buf, "Falha ao abrir socket BinLoader (0x%08X)", (unsigned)sock);
-        error = buf;
+        portalNetworkTrace("BinLoader socket failed sock=0x%08X", (unsigned)sock);
+        error = "Falha ao abrir conexão interna com o BinLoader";
         return false;
     }
 
@@ -411,10 +432,7 @@ bool portalNetworkSendTcp(const std::string& hostIp, uint16_t port, const std::s
     int rc = nbNetConnect(sock, &addr, sizeof(addr));
     if (rc < 0) {
         nbNetClose(sock);
-        char buf[192];
-        snprintf(buf, sizeof buf, "BinLoader inacessível em %s:%u (0x%08X) — ative o BinLoader no GoldHEN",
-                 hostIp.c_str(), (unsigned)port, (unsigned)rc);
-        error = buf;
+        error = "BinLoader inacessível em " + hostIp + ":" + std::to_string(port) + " — ative o BinLoader no GoldHEN";
         portalNetworkTrace("BinLoader connect failed %s:%u rc=0x%08X", hostIp.c_str(), (unsigned)port, (unsigned)rc);
         return false;
     }
@@ -424,9 +442,7 @@ bool portalNetworkSendTcp(const std::string& hostIp, uint16_t port, const std::s
         int n = nbNetSend(sock, data.data() + sent, data.size() - sent, 0);
         if (n <= 0) {
             nbNetClose(sock);
-            char buf[160];
-            snprintf(buf, sizeof buf, "Falha ao enviar payload para BinLoader (%d / 0x%08X)", n, (unsigned)n);
-            error = buf;
+            error = "Conexão interrompida ao enviar payload para o BinLoader";
             portalNetworkTrace("BinLoader send failed %s:%u n=%d sent=%zu/%zu",
                                hostIp.c_str(), (unsigned)port, n, sent, data.size());
             return false;

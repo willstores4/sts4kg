@@ -47,9 +47,7 @@ static int (*sysNotifyFn)(int, const char*) = nullptr;
 
 static std::string apiError(const char* what, int code) {
     installLog("%s: 0x%08X", what, (unsigned)code);
-    char s[240];
-    snprintf(s, sizeof s, "%s (0x%08X)", what, (unsigned)code);
-    return s;
+    return what;
 }
 
 static void finalize() {
@@ -228,16 +226,23 @@ static bool foregroundUser(int& user, std::string& error) {
     return true;
 }
 
-static std::string translateBgftError(int r) {
+static std::string translateBgftError(int r, const char* fallback = "Não foi possível registrar instalação") {
     switch ((uint32_t)r) {
-        case 0x80990088u: return apiError("Conteúdo já está instalado", r);
-        case 0x80990086u: return apiError("Já existe uma tarefa pendente em Notificações", r);
+        case 0x80990088u: return apiError("Conteúdo já está instalado no PS4", r);
+        case 0x80990086u: return apiError("Já existe uma tarefa pendente em Notificações do PS4", r);
         case 0x80990015u: return apiError("Falha de rede ou URL inacessível pelo PS4", r);
-        case 0x80990004u: return apiError("Parâmetro ou resposta HTTP/PKG rejeitada pelo PS4 — tente L3 (Local)", r);
+        case 0x80990004u: return apiError("Parâmetro ou resposta HTTP/PKG rejeitada pelo PS4 — tente L3 (Local) ou Proxy", r);
+        case 0x80990001u: return apiError("Serviço de downloads do PS4 ocupado — tente novamente", r);
+        case 0x80990002u: return apiError("Memória insuficiente no PS4 para iniciar o download", r);
+        case 0x80990005u: return apiError("Tarefa de download não encontrada em Notificações", r);
+        case 0x80990009u:
+        case 0x8099000au: return apiError("Pacote PKG inválido ou cabeçalho incompatível", r);
         case 0x80990039u:
         case 0x80A30026u:
-        case 0x80990085u: return apiError("Espaço insuficiente no PS4", r);
-        default: return apiError("Não foi possível registrar instalação", r);
+        case 0x80990085u: return apiError("Espaço insuficiente no armazenamento do PS4", r);
+        case 0x80020002u:
+        case 0x80020014u: return apiError("Módulo do sistema não encontrado no PS4", r);
+        default: return apiError(fallback, r);
     }
 }
 
@@ -374,7 +379,7 @@ static bool startTask(int id, std::string& error) {
     int r = bgftStart(id);
     installLog("sceBgftServiceDownloadStartTask: task=%d result=0x%08X", id, (unsigned)r);
     if (r) {
-        error = apiError("Não foi possível iniciar tarefa no PS4", r);
+        error = translateBgftError(r, "Não foi possível iniciar o download no PS4");
         return false;
     }
     return true;
@@ -386,7 +391,7 @@ static bool pauseTask(int id, std::string& error) {
     int r = bgftPause(id);
     installLog("sceBgftServiceDownloadPauseTask: task=%d result=0x%08X", id, (unsigned)r);
     if (r) {
-        error = apiError("Não foi possível pausar tarefa", r);
+        error = translateBgftError(r, "Não foi possível pausar a tarefa");
         return false;
     }
     return true;
@@ -407,7 +412,7 @@ static bool stopTask(int id, std::string& error) {
     int r = bgftStop(id);
     installLog("sceBgftServiceDownloadStopTask: task=%d result=0x%08X", id, (unsigned)r);
     if (r) {
-        error = apiError("Não foi possível cancelar tarefa", r);
+        error = translateBgftError(r, "Não foi possível cancelar a tarefa");
         return false;
     }
     return true;
@@ -421,7 +426,7 @@ static bool pollTask(int id, uint64_t& doneOut, uint64_t& totalOut, int& percent
     int r = bgftProgress(id, &p);
     if (r || p.error) {
         installLog("BGFT progress failed: task=%d result=0x%08X error=0x%08X", id, (unsigned)r, (unsigned)p.error);
-        error = apiError("Erro na tarefa em Notificações", r ? r : p.error);
+        error = translateBgftError(r ? r : p.error, "Falha durante o download em Notificações");
         return false;
     }
     const uint64_t length = p.lengthTotal ? p.lengthTotal : p.length;

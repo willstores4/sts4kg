@@ -6,21 +6,32 @@
 asm("clear_stack:\nmov $0x800,%ecx\nxor %rax, %rax\n.L1:\npush %rax\nloop .L1\nadd $0x4000,%rsp\nret");
 void clear_stack(void);
 
-static void int32ToHex(int32_t Value, char* Hex) {
-	Hex[0] = '0';
-	Hex[1] = 'x';
-	for (int i = 7, x = 2; i >= 0; i--, x++) {
-		int BytePart = (Value >> (4 * i)) & 0x0F;
-		Hex[x] = (BytePart < 10) ? ('0' + BytePart) : ('A' + (BytePart - 10));
+static const char* bgft_reason(int rv, const char* fallback) {
+	switch ((uint32_t)rv) {
+		case 0x80990086u:
+			return "WILL: Já existe outro download pendente em Notificações";
+		case 0x80990088u:
+			return "WILL: Conteúdo já instalado ou já na lista de download";
+		case 0x80990039u:
+		case 0x80A30026u:
+		case 0x80990085u:
+			return "WILL: Espaço insuficiente no armazenamento do PS4";
+		case 0x80990015u:
+			return "WILL: Falha de rede ou link inacessível pelo PS4";
+		case 0x80990004u:
+			return "WILL: Link ou resposta rejeitada pelo servidor (ative o Proxy no painel)";
+		case 0x80990001u:
+			return "WILL: Serviço de downloads do PS4 ocupado — tente novamente";
+		case 0x80990002u:
+			return "WILL: Memória insuficiente no PS4 para iniciar o download";
+		case 0x80990005u:
+			return "WILL: Tarefa de download não encontrada em Notificações";
+		case 0x80990009u:
+		case 0x8099000au:
+			return "WILL: Pacote PKG inválido ou formato incompatível";
+		default:
+			return fallback;
 	}
-	Hex[10] = 0;
-}
-
-static void concat(const char* StringA, const char* StringB, char* Output) {
-	int Offset = 0;
-	for (int i = 0; StringA[i] != 0; i++) Output[Offset++] = StringA[i];
-	for (int i = 0; StringB[i] != 0; i++) Output[Offset++] = StringB[i];
-	Output[Offset] = 0;
 }
 
 static int url_has_json_ext(const char* url) {
@@ -110,11 +121,8 @@ int main(void) {
 
 	int rv = sceAppInstUtilInitialize();
 	if (rv) {
-		char err[0x200] = "\x0";
-		char errCode[0x20] = "\x0";
-		int32ToHex(rv, errCode);
-		concat("WILL Installer: AppInstUtil ", errCode, err);
-		if (sceSysUtilSendSystemNotificationWithText) sceSysUtilSendSystemNotificationWithText(222, err);
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, "WILL: Não foi possível preparar o instalador do PS4.");
 		return -1;
 	}
 
@@ -140,11 +148,8 @@ int main(void) {
 
 	rv = sceBgftInitialize(&ip);
 	if (rv && (uint32_t)rv != 0x80990001u) {
-		char err[0x200] = "\x0";
-		char errCode[0x20] = "\x0";
-		int32ToHex(rv, errCode);
-		concat("WILL Installer: BGFT Init ", errCode, err);
-		if (sceSysUtilSendSystemNotificationWithText) sceSysUtilSendSystemNotificationWithText(222, err);
+		if (sceSysUtilSendSystemNotificationWithText)
+			sceSysUtilSendSystemNotificationWithText(222, bgft_reason(rv, "WILL: Não foi possível iniciar o gerenciador de downloads do PS4."));
 		if (sceAppInstUtilTerminate) sceAppInstUtilTerminate();
 		munmap(ip.mem, ip.size);
 		return -1;
@@ -221,43 +226,18 @@ int main(void) {
 			}
 			rv = start_rv;
 			if (sceSysUtilSendSystemNotificationWithText) {
-				char err[0x200] = "\x0";
-				char errCode[0x20] = "\x0";
-				int32ToHex(rv, errCode);
-				concat("WILL: Falha ao iniciar tarefa ", errCode, err);
-				sceSysUtilSendSystemNotificationWithText(222, err);
+				sceSysUtilSendSystemNotificationWithText(
+					222, bgft_reason(rv, "WILL: Tarefa registrada, mas o PS4 não conseguiu iniciar o download.")
+				);
 			}
 			break;
 		}
 
-		if (!sceSysUtilSendSystemNotificationWithText) break;
-
-		if ((uint32_t)rv == 0x80990086u) {
-			sceSysUtilSendSystemNotificationWithText(222, "WILL: Erro 0x80990086\nVerifique downloads antigos em Notificações.");
-			break;
+		if (sceSysUtilSendSystemNotificationWithText) {
+			sceSysUtilSendSystemNotificationWithText(
+				222, bgft_reason(rv, "WILL: Não foi possível registrar o download no PS4.")
+			);
 		}
-		if ((uint32_t)rv == 0x80990088u) {
-			sceSysUtilSendSystemNotificationWithText(222, "WILL: Conteúdo já instalado ou já na lista de download!");
-			break;
-		}
-		if ((uint32_t)rv == 0x80990039u || (uint32_t)rv == 0x80A30026u || (uint32_t)rv == 0x80990085u) {
-			sceSysUtilSendSystemNotificationWithText(222, "WILL: Espaço insuficiente no PS4.");
-			break;
-		}
-		if ((uint32_t)rv == 0x80990015u || (uint32_t)rv == 0x80990004u) {
-			char err[0x200] = "\x0";
-			char errCode[0x20] = "\x0";
-			int32ToHex(rv, errCode);
-			concat("WILL: Falha de rede ou rejeição ", errCode, err);
-			sceSysUtilSendSystemNotificationWithText(222, err);
-			break;
-		}
-
-		char err[0x200] = "\x0";
-		char errCode[0x20] = "\x0";
-		int32ToHex(rv, errCode);
-		concat("WILL: Erro BGFT -> ", errCode, err);
-		sceSysUtilSendSystemNotificationWithText(222, err);
 		break;
 	}
 

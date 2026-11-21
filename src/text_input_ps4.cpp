@@ -72,9 +72,7 @@ static std::string imeDecode(const char16_t* in, size_t capacity) {
 }
 
 static bool imeError(const char* stage, int code, std::string& error) {
-    char text[200];
-    snprintf(text, sizeof text, "%s (0x%08X).", stage, (unsigned)code);
-    error = text;
+    error = std::string(stage) + ".";
     IME_LOG("native keyboard error: stage=%s code=0x%08X", stage, (unsigned)code);
     return false;
 }
