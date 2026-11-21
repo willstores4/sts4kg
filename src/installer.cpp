@@ -495,11 +495,11 @@ void PackageInstaller::onDownloadProgress(void* user, uint64_t done, uint64_t to
     pthread_mutex_lock(&ctx->self->mutex);
     if (auto* t = ctx->self->findLocked(ctx->id)) {
         uint64_t overallDone = ctx->baseOffset + done;
-        uint64_t overallTotal = ctx->totalOverride > 0 ? ctx->totalOverride : total;
+        uint64_t overallTotal = ctx->totalOverride > 0 ? ctx->totalOverride : (total > 0 ? total : t->bytes);
         t->doneBytes = overallDone;
         if (overallTotal > 0) t->bytes = overallTotal;
         int pct = overallTotal > 0 ? (int)std::min<uint64_t>(99, overallDone * 100 / overallTotal) : -1;
-        if (pct != t->percent || overallDone < ctx->lastVersionBump || overallDone - ctx->lastVersionBump >= 512 * 1024) {
+        if (pct != t->percent || overallDone < ctx->lastVersionBump || overallDone - ctx->lastVersionBump >= 128 * 1024) {
             t->percent = pct;
             ctx->lastVersionBump = overallDone;
             ++ctx->self->version;
@@ -533,6 +533,7 @@ void PackageInstaller::loop() {
                 nextJobId = t.id;
                 bool fileDownload = (t.mode == InstallMode::LocalStorageEx || t.mode == InstallMode::DirectSave);
                 t.state = fileDownload ? InstallState::Downloading : InstallState::Registering;
+                if (fileDownload && t.percent < 0) t.percent = 0;
                 t.note = t.mode == InstallMode::LocalStorageEx ? "Baixando pacote PKG..."
                        : t.mode == InstallMode::DirectSave     ? ("Baixando em " + t.path + "...")
                        : t.mode == InstallMode::BinLoaderElf   ? "Gerando ELF para BinLoader (127.0.0.1:9090)..."

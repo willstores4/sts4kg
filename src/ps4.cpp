@@ -377,12 +377,15 @@ int main() {
             ui.notice = instNotice;
             ui.dirty = true;
         }
-        if (installer.snapshot(installVersion, ui.tasks) && ui.tab == ui.downloadsTab()) {
+        if (installer.snapshot(installVersion, ui.tasks)) {
             ui.dirty = true;
         }
 
         // Atualiza UI quando sincronização termina ou baixa novas capas
         pthread_mutex_lock(&syncLock);
+        bool wasSyncing = ui.syncing;
+        ui.syncing = syncWorking;
+        if (ui.syncing != wasSyncing) ui.dirty = true;
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
             ui.status = syncStatusMsg;
             ui.dirty = true;
@@ -402,7 +405,12 @@ int main() {
         }
         pthread_mutex_unlock(&syncLock);
 
-        if (ui.dirty) ui.draw();
+        bool animSpin = ui.hasSpinnerActivity();
+        bool animTick = animSpin && ((ui.tab == ui.downloadsTab() || ui.detail) ? (frame & 1) == 0 : (frame % 3) == 0);
+        if (ui.dirty || animTick) {
+            ui.animFrame = frame;
+            ui.draw();
+        }
         display.flip(ui.c, frame);
     }
 }

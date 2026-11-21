@@ -271,6 +271,88 @@ int main() {
     ui.draw();
     ui.action(BACK);
 
+    // Spinner girando e porcentagem durante downloads (Detalhes, Aba Notificações e Grid)
+    assert(!ui.hasSpinnerActivity());
+    InstallPackage tActive;
+    tActive.id = 101;
+    tActive.itemId = 23;
+    tActive.url = "http://192.168.1.2:8765/files/goldhen.bin";
+    tActive.name = "GoldHEN Direct";
+    tActive.mode = InstallMode::DirectSave;
+    tActive.path = "/data/goldhen.bin";
+    tActive.bytes = 1000;
+    tActive.doneBytes = 420;
+    tActive.percent = 42;
+    tActive.state = InstallState::Downloading;
+    assert(UI::isTaskActive(tActive));
+    assert(UI::taskDisplayPercent(tActive) == 42);
+    assert(UI::formatPercentText(42) == "42%");
+    InstallPackage tUnknown = tActive;
+    tUnknown.percent = -1;
+    tUnknown.bytes = 0;
+    tUnknown.doneBytes = 128;
+    assert(UI::taskDisplayPercent(tUnknown) == -1);
+    assert(UI::formatPercentText(-1) == "--%");
+    tUnknown.doneBytes = 0;
+    assert(UI::taskDisplayPercent(tUnknown) == 0);
+
+    ui.games = multiRound;
+    ui.filter();
+    ui.tasks = {tActive};
+    assert(ui.hasSpinnerActivity());
+    int idxDirect = -1;
+    for (size_t vi = 0; vi < ui.visible.size(); ++vi) {
+        if (ui.games[ui.visible[vi]].id == 23) { idxDirect = int(vi); break; }
+    }
+    assert(idxDirect >= 0);
+    ui.selected = idxDirect;
+    ui.action(CONFIRM); // abre detalhes de GoldHEN Direct com download ativo
+    assert(ui.detail);
+    ui.animFrame = 0;
+    ui.draw();
+    std::vector<uint32_t> spinSnap0;
+    for (int py = 780; py <= 836; ++py) {
+        for (int px = 400; px <= 456; ++px) {
+            spinSnap0.push_back(ui.c.pixels[py * Canvas::W + px]);
+        }
+    }
+    ui.animFrame = 15;
+    ui.draw();
+    bool spinnerChanged = false;
+    size_t spIdx = 0;
+    for (int py = 780; py <= 836 && !spinnerChanged; ++py) {
+        for (int px = 400; px <= 456; ++px) {
+            if (ui.c.pixels[py * Canvas::W + px] != spinSnap0[spIdx++]) {
+                spinnerChanged = true;
+                break;
+            }
+        }
+    }
+    assert(spinnerChanged);
+    ui.action(BACK);
+
+    // Renderizar Aba Notificações com estados variados (Ativo, Concluído, Pausado, Erro)
+    InstallPackage tDone = tActive;
+    tDone.id = 102; tDone.state = InstallState::Complete; tDone.percent = 100; tDone.doneBytes = 1000;
+    assert(UI::taskDisplayPercent(tDone) == 100);
+    InstallPackage tPaused = tActive;
+    tPaused.id = 103; tPaused.state = InstallState::Paused; tPaused.percent = 65;
+    InstallPackage tErr = tActive;
+    tErr.id = 104; tErr.state = InstallState::Error; tErr.note = "Falha de rede";
+    ui.tasks = {tActive, tDone, tPaused, tErr};
+    ui.tab = ui.downloadsTab();
+    ui.animFrame = 22;
+    ui.draw();
+    assert(ui.c.pixels.size() == 1920 * 1080);
+
+    ui.tab = 0;
+    ui.tasks.clear();
+    ui.syncing = true;
+    assert(ui.hasSpinnerActivity());
+    ui.draw();
+    ui.syncing = false;
+    assert(!ui.hasSpinnerActivity());
+
     unlink("build/test-data/favorites.txt");
     rmdir("build/test-data");
     std::cout << "Catalog JSON parser, round-trip, categories, search, install actions and UI rendering passed.\n";

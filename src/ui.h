@@ -170,6 +170,79 @@ struct Canvas {
         }
     }
 
+    int textWidth(const std::string& s, int size) {
+        int w = 0;
+        for (size_t i = 0; i < s.size();) {
+            unsigned cp = (unsigned char)s[i++];
+            if (cp >= 192) {
+                int n = cp < 224 ? 1 : cp < 240 ? 2 : 3;
+                cp &= n == 1 ? 31 : n == 2 ? 15 : 7;
+                while (n-- && i < s.size()) cp = (cp << 6) | ((unsigned char)s[i++] & 63);
+            }
+            w += glyph(cp, size).advance;
+        }
+        return w;
+    }
+
+    void ring(int cx, int cy, int radius, int thickness, uint32_t color, int alpha = 255) {
+        if (radius <= 1 || thickness <= 0 || alpha <= 0) return;
+        float rOuter = float(radius);
+        float rInner = std::max(0.0f, rOuter - float(thickness));
+        int bound = radius + 2;
+        int x0 = std::max(0, cx - bound), x1 = std::min(W - 1, cx + bound);
+        int y0 = std::max(0, cy - bound), y1 = std::min(H - 1, cy + bound);
+        for (int py = y0; py <= y1; ++py) {
+            float dy = float(py - cy);
+            for (int px = x0; px <= x1; ++px) {
+                float dx = float(px - cx);
+                float d = std::sqrt(dx * dx + dy * dy);
+                if (d < rInner - 1.0f || d > rOuter + 1.0f) continue;
+                float cov = 1.0f;
+                if (d > rOuter) cov = std::max(0.0f, 1.0f - (d - rOuter));
+                else if (d < rInner) cov = std::max(0.0f, 1.0f - (rInner - d));
+                int a = int(cov * alpha + 0.5f);
+                if (a > 0) blend(px, py, color, a);
+            }
+        }
+    }
+
+    void spinner(int cx, int cy, int radius, int thickness, float angleRad,
+                 uint32_t trackColor, uint32_t arcColor, float sweepRad = 2.75f) {
+        if (radius <= 1 || thickness <= 0) return;
+        const float kTwoPi = 6.2831853f;
+        float rOuter = float(radius);
+        float rInner = std::max(0.0f, rOuter - float(thickness));
+        float normBase = std::fmod(angleRad, kTwoPi);
+        if (normBase < 0.0f) normBase += kTwoPi;
+
+        int bound = radius + 2;
+        int x0 = std::max(0, cx - bound), x1 = std::min(W - 1, cx + bound);
+        int y0 = std::max(0, cy - bound), y1 = std::min(H - 1, cy + bound);
+        for (int py = y0; py <= y1; ++py) {
+            float dy = float(py - cy);
+            for (int px = x0; px <= x1; ++px) {
+                float dx = float(px - cx);
+                float d = std::sqrt(dx * dx + dy * dy);
+                if (d < rInner - 1.0f || d > rOuter + 1.0f) continue;
+                float cov = 1.0f;
+                if (d > rOuter) cov = std::max(0.0f, 1.0f - (d - rOuter));
+                else if (d < rInner) cov = std::max(0.0f, 1.0f - (rInner - d));
+                int trackA = int(cov * 115.0f + 0.5f);
+                if (trackA > 0) blend(px, py, trackColor, trackA);
+
+                float a = std::atan2(dy, dx);
+                if (a < 0.0f) a += kTwoPi;
+                float rel = a - normBase;
+                if (rel < 0.0f) rel += kTwoPi;
+                if (rel <= sweepRad) {
+                    float t = rel / std::max(0.01f, sweepRad);
+                    int arcA = int(cov * (90.0f + 165.0f * t) + 0.5f);
+                    if (arcA > 0) blend(px, py, arcColor, arcA);
+                }
+            }
+        }
+    }
+
     void image(const Bitmap& b, int x, int y, int w, int h) {
         if (b.p.empty()) return;
         float scale = std::max(float(w) / b.w, float(h) / b.h);
@@ -236,7 +309,8 @@ struct UI {
     std::map<int, Bitmap> covers;
 
     int selected = 0, tab = 0, sort = 0, key = 0, detailLink = 0;
-    bool detail = false, keyboard = false, dirty = true;
+    bool detail = false, keyboard = false, dirty = true, syncing = false;
+    int animFrame = 0;
     KeyboardTarget kbTarget = KbNone;
     std::string kbBuffer;
     std::string notice;
@@ -264,6 +338,198 @@ struct UI {
     int selectedTaskId() const {
         if (tasks.empty()) return 0;
         return tasks[std::min(taskSelected, int(tasks.size()) - 1)].id;
+    }
+
+    float spinnerAngle() const { return float(animFrame) * 0.105f; }
+
+    static bool isTaskActive(const InstallPackage& t) {
+        return t.state == InstallState::Queued ||
+               t.state == InstallState::Downloading ||
+               t.state == InstallState::Registering ||
+               t.state == InstallState::Registered ||
+               t.state == InstallState::Installing;
+    }
+
+    static int taskDisplayPercent(const InstallPackage& t) {
+        if (t.state == InstallState::Complete) return 100;
+        if (t.percent >= 0) return std::min(100, t.percent);
+        if (t.bytes > 0) return (int)std::min<uint64_t>(99, t.doneBytes * 100 / t.bytes);
+        if (t.state == InstallState::Queued || t.state == InstallState::Registering ||
+            t.state == InstallState::Registered ||
+            (t.state == InstallState::Downloading && t.doneBytes == 0)) return 0;
+        return -1;
+    }
+
+    static std::string formatPercentText(int pct) {
+        return pct >= 0 ? (std::to_string(pct) + "%") : "--%";
+    }
+
+    const InstallPackage* findTaskForItem(int itemId, const std::string& urlFilter = "") const {
+        const InstallPackage* fallback = nullptr;
+        for (const auto& t : tasks) {
+            bool matchId = (itemId > 0 && t.itemId == itemId);
+            bool matchUrl = (!urlFilter.empty() && t.url == urlFilter);
+            if (!urlFilter.empty()) {
+                if (!(matchUrl && (itemId <= 0 || matchId || t.itemId == 0))) continue;
+            } else {
+                if (!matchId) continue;
+            }
+            if (isTaskActive(t)) return &t;
+            if (!fallback) fallback = &t;
+        }
+        return fallback;
+    }
+
+    int countActiveTasks(int itemId = 0, int* outDone = nullptr, int* outTotal = nullptr) const {
+        int active = 0, doneCount = 0, total = 0;
+        for (const auto& t : tasks) {
+            if (itemId > 0 && t.itemId != itemId) continue;
+            ++total;
+            if (isTaskActive(t)) ++active;
+            else if (t.state == InstallState::Complete) ++doneCount;
+        }
+        if (outDone) *outDone = doneCount;
+        if (outTotal) *outTotal = total;
+        return active;
+    }
+
+    const InstallPackage* primaryActiveTask() const {
+        for (const auto& t : tasks) {
+            if (isTaskActive(t)) return &t;
+        }
+        return nullptr;
+    }
+
+    bool hasSpinnerActivity() const {
+        return syncing || primaryActiveTask() != nullptr;
+    }
+
+    void drawProgressBar(int x, int y, int w, int h, int pct, bool active, uint32_t trackColor, uint32_t fillColor) {
+        c.rect(x, y, w, h, trackColor);
+        if (pct >= 0) {
+            int fw = w * std::min(100, pct) / 100;
+            if (fw > 0) c.rect(x, y, fw, h, fillColor);
+        } else if (active) {
+            int segW = std::max(36, w / 4);
+            int rawPos = (animFrame * 8) % std::max(1, w + segW);
+            int bx = x + rawPos - segW;
+            int clippedStart = std::max(x, bx);
+            int clippedEnd = std::min(x + w, bx + segW);
+            if (clippedEnd > clippedStart) {
+                c.rect(clippedStart, y, clippedEnd - clippedStart, h, fillColor);
+            }
+        }
+    }
+
+    void drawActivityIcon(const InstallPackage& t, int cx, int cy, int radius, int thickness, bool onBrightBg = false) {
+        uint32_t trackCol = onBrightBg ? 0x16538f : 0x163154;
+        uint32_t arcCol = onBrightBg ? 0x060b12 : 0x5cb8ff;
+        uint32_t okCol = onBrightBg ? 0x060b12 : 0x34d399;
+        uint32_t pauseCol = onBrightBg ? 0x060b12 : 0xfbbf24;
+        uint32_t errCol = onBrightBg ? 0x060b12 : 0xff6b6b;
+
+        if (isTaskActive(t)) {
+            c.spinner(cx, cy, radius, thickness, spinnerAngle(), trackCol, arcCol);
+        } else if (t.state == InstallState::Complete) {
+            c.ring(cx, cy, radius, thickness, okCol, 255);
+            if (radius >= 16) {
+                int fs = std::max(12, radius * 58 / 100);
+                int tw = c.textWidth("OK", fs);
+                c.text("OK", cx - tw / 2, cy + (fs + 2) / 3, fs, okCol);
+            }
+        } else if (t.state == InstallState::Paused) {
+            c.ring(cx, cy, radius, thickness, pauseCol, 220);
+            if (radius >= 14) {
+                int bh = std::max(8, radius * 75 / 100);
+                int bw = std::max(2, thickness - 1);
+                c.rect(cx - bw - 2, cy - bh / 2, bw, bh, pauseCol);
+                c.rect(cx + 2, cy - bh / 2, bw, bh, pauseCol);
+            }
+        } else {
+            c.ring(cx, cy, radius, thickness, errCol, 230);
+            if (radius >= 14) {
+                int fs = std::max(14, radius * 85 / 100);
+                int tw = c.textWidth("!", fs);
+                c.text("!", cx - tw / 2, cy + (fs + 2) / 3, fs, errCol);
+            }
+        }
+    }
+
+    void drawHeaderActivityPill(int dlTab) {
+        const InstallPackage* act = primaryActiveTask();
+        if (!act && !syncing) return;
+        const uint32_t cyan = 0x318ee0, white = 0xe7eff7;
+        int px = (tab == dlTab) ? 1390 : 1120;
+        int pw = (tab == dlTab) ? 508 : 486;
+        c.rounded(px, 25, pw, 42, 6, 0x0d213a);
+        c.rect(px, 25, 3, 42, cyan);
+        c.spinner(px + 25, 46, 12, 3, spinnerAngle(), 0x1a365d, 0x5cb8ff);
+        if (act) {
+            std::string pctStr = formatPercentText(taskDisplayPercent(*act));
+            int pctW = c.textWidth(pctStr, 20);
+            c.text(pctStr, px + pw - 16 - pctW, 53, 20, 0x5cb8ff, pctW + 8);
+            int nAct = countActiveTasks();
+            std::string prefix = nAct > 1 ? ("(" + std::to_string(nAct) + ") ") : "";
+            std::string label = prefix + act->name;
+            int maxLbl = std::max(80, pw - 74 - pctW);
+            c.text(label, px + 46, 52, 18, white, maxLbl);
+        } else {
+            c.text("Sincronizando catálogo...", px + 46, 52, 18, white, pw - 62);
+        }
+    }
+
+    void drawDetailProgressWidget(const Game& g, const Game& shown, bool isAll) {
+        const InstallPackage* t = isAll ? findTaskForItem(g.id, "") : findTaskForItem(g.id, shown.url);
+        if (!t && isAll) return;
+        if (!t && g.links.size() <= 1) t = findTaskForItem(g.id, "");
+        if (!t) return;
+
+        const uint32_t cyan = 0x318ee0, white = 0xe7eff7, muted = 0xb2bec9;
+        bool active = isTaskActive(*t);
+        uint32_t accentCol = active ? cyan
+                           : (t->state == InstallState::Complete) ? uint32_t(0x34d399)
+                           : (t->state == InstallState::Paused)   ? uint32_t(0xfbbf24)
+                                                                  : uint32_t(0xff6b6b);
+
+        c.rounded(382, 756, 390, 156, 8, 0x091a32);
+        c.rect(382, 756, 5, 156, accentCol);
+
+        drawActivityIcon(*t, 428, 804, 24, 5, false);
+
+        std::string phaseLabel = active ? std::string(installStateName(t->state)) + "..." : installStateLabel(*t);
+        if (isAll) {
+            int doneCnt = 0, totCnt = 0;
+            int actCnt = countActiveTasks(g.id, &doneCnt, &totCnt);
+            if (totCnt > 1) {
+                phaseLabel += " (" + std::to_string(doneCnt) + "/" + std::to_string(totCnt) +
+                              (actCnt > 0 ? ", " + std::to_string(actCnt) + " at." : "") + ")";
+            }
+        }
+        c.text(phaseLabel, 468, 792, 19, white, 290);
+
+        int pct = taskDisplayPercent(*t);
+        std::string pctStr = formatPercentText(pct);
+        int pctW = c.textWidth(pctStr, 32);
+        c.text(pctStr, 468, 828, 32, accentCol, 120);
+
+        std::string bytesStr;
+        if (t->bytes > 0) bytesStr = bytesText(t->doneBytes) + " / " + bytesText(t->bytes);
+        else if (t->doneBytes > 0) bytesStr = bytesText(t->doneBytes) + " baixados";
+        else bytesStr = active ? "Aguardando..." : "";
+        int bytesX = 468 + pctW + 12;
+        if (!bytesStr.empty() && bytesX < 756) {
+            c.text(bytesStr, bytesX, 825, 17, white, 758 - bytesX);
+        }
+
+        drawProgressBar(400, 848, 354, 8, pct, active, 0x050b16, accentCol);
+
+        std::string infoLine = (t->mode == InstallMode::DirectSave && !t->path.empty())
+            ? ("Destino: " + t->path)
+            : (t->note.empty() ? installStatusText(*t) : t->note);
+        c.text(infoLine, 400, 879, 16, t->state == InstallState::Error ? 0xffa5a5 : muted, 354);
+
+        std::string footLine = active ? "CÍRCULO fecha janela (continua baixando)" : installStatusText(*t);
+        c.text(footLine, 400, 903, 15, t->state == InstallState::Error ? 0xffa5a5 : cyan, 354);
     }
 
     std::string tabTitle(int idx) const {
@@ -605,14 +871,26 @@ struct UI {
                 c.rect(22, y - 28, 3, 42, cyan);
             }
             std::string label = tabTitle(i);
-            c.text(label, 42, y, active ? 23 : 22, active ? white : muted, 196);
+            c.text(label, 42, y, active ? 23 : 22, active ? white : muted, i == dlTab ? 170 : 196);
 
             std::string countStr;
             if (i == 0) countStr = std::to_string(games.size());
             else if (i == 1) countStr = std::to_string(favorites.size());
             else if (i >= 2 && i < dlTab) countStr = std::to_string(countForCategory(categories[i - 2]));
-            else if (i == dlTab) countStr = std::to_string(tasks.size());
-            c.text(countStr, 250, y - 1, 17, active ? cyan : muted, 40);
+            else if (i == dlTab) {
+                int actDl = countActiveTasks();
+                if (actDl > 0) {
+                    c.spinner(224, y - 7, 9, 2, spinnerAngle(), 0x163154, 0x5cb8ff);
+                    if (actDl == 1) {
+                        if (const auto* act = primaryActiveTask()) countStr = formatPercentText(taskDisplayPercent(*act));
+                    } else {
+                        countStr = std::to_string(actDl) + " at.";
+                    }
+                } else {
+                    countStr = std::to_string(tasks.size());
+                }
+            }
+            c.text(countStr, 240, y - 1, 17, active ? cyan : muted, 52);
         }
 
         // Info do Servidor na barra lateral
@@ -637,35 +915,55 @@ struct UI {
 
         // Grid do catálogo
         if (tab != dlTab) {
-            if (visible.empty()) {
-                c.text(games.empty() ? "Nenhum homebrew sincronizado" : "Nenhum item encontrado", 352, 390, 40, white);
-                std::string hint = games.empty()
-                    ? "Inicie o Painel Web e pressione OPTIONS para sincronizar (" + serverUrl + ") ou L3 para trocar o IP."
-                    : (tab == 1 ? "Pressione QUADRADO em um homebrew para salvar nos favoritos."
-                                : "Pressione TRIÂNGULO para buscar ou CÍRCULO para limpar filtros.");
-                c.lines(hint, 352, 448, 24, muted, 1400, 3);
-            } else {
-                int start = selected / 12 * 12;
-                for (int i = start; i < std::min(start + 12, int(visible.size())); ++i) {
-                    const auto& g = games[visible[i]];
-                    int k = i - start;
-                    int x = 352 + (k % 6) * 257;
-                    int y = 214 + (k / 6) * 362;
-                    bool active = (i == selected);
-                    if (active) c.rounded(x - 2, y - 2, 238, 332, 6, cyan);
-                    c.rounded(x, y, 234, 328, 5, panel);
-                    drawCase(g, x, y, 234);
+            drawHeaderActivityPill(dlTab);
+            if (!(detail && current())) {
+                if (visible.empty()) {
+                    c.text(games.empty() ? "Nenhum homebrew sincronizado" : "Nenhum item encontrado", 352, 390, 40, white);
+                    std::string hint = games.empty()
+                        ? "Inicie o Painel Web e pressione OPTIONS para sincronizar (" + serverUrl + ") ou L3 para trocar o IP."
+                        : (tab == 1 ? "Pressione QUADRADO em um homebrew para salvar nos favoritos."
+                                    : "Pressione TRIÂNGULO para buscar ou CÍRCULO para limpar filtros.");
+                    c.lines(hint, 352, 448, 24, muted, 1400, 3);
+                } else {
+                    int start = selected / 12 * 12;
+                    for (int i = start; i < std::min(start + 12, int(visible.size())); ++i) {
+                        const auto& g = games[visible[i]];
+                        int k = i - start;
+                        int x = 352 + (k % 6) * 257;
+                        int y = 214 + (k / 6) * 362;
+                        bool active = (i == selected);
+                        if (active) c.rounded(x - 2, y - 2, 238, 332, 6, cyan);
+                        c.rounded(x, y, 234, 328, 5, panel);
+                        drawCase(g, x, y, 234);
+                        if (const InstallPackage* cardTask = findTaskForItem(g.id)) {
+                            int cardPct = taskDisplayPercent(*cardTask);
+                            if (isTaskActive(*cardTask)) {
+                                c.rounded(x + 12, y + 194, 210, 32, 6, 0x061326);
+                                c.rect(x + 12, y + 194, 3, 32, cyan);
+                                c.spinner(x + 30, y + 210, 9, 3, spinnerAngle(), 0x163154, 0x5cb8ff);
+                                std::string pStr = formatPercentText(cardPct);
+                                int pW = c.textWidth(pStr, 17);
+                                c.text(pStr, x + 214 - pW, y + 216, 17, 0x5cb8ff, pW + 6);
+                                c.text("Baixando", x + 46, y + 215, 16, white, std::max(60, 162 - pW));
+                            } else if (cardTask->state == InstallState::Complete) {
+                                c.rounded(x + 12, y + 196, 210, 28, 6, 0x08221e);
+                                c.rect(x + 12, y + 196, 3, 28, 0x34d399);
+                                c.text(cardTask->mode == InstallMode::DirectSave ? "100%  •  Salvo" : "100%  •  Pronto",
+                                       x + 24, y + 216, 15, 0x34d399, 190);
+                            }
+                        }
 
-                    std::string ver = g.version.empty() ? "HB" : "v" + g.version;
-                    c.text(ver, x + 11, y + 257, 17, white, 75);
-                    c.text(g.category, x + 86, y + 257, 16, cyan, 126);
-                    if (favorites.count(g.id)) c.text("*", x + 216, y + 257, 18, cyan);
-                    c.lines(g.title, x + 11, y + 282, 19, white, 212, 2);
-                    std::string sub = g.size.empty() ? g.author : g.size;
-                    c.text(sub, x + 11, y + 322, 17, muted, 212);
+                        std::string ver = g.version.empty() ? "HB" : "v" + g.version;
+                        c.text(ver, x + 11, y + 257, 17, white, 75);
+                        c.text(g.category, x + 86, y + 257, 16, cyan, 126);
+                        if (favorites.count(g.id)) c.text("*", x + 216, y + 257, 18, cyan);
+                        c.lines(g.title, x + 11, y + 282, 19, white, 212, 2);
+                        std::string sub = g.size.empty() ? g.author : g.size;
+                        c.text(sub, x + 11, y + 322, 17, muted, 212);
+                    }
+                    c.text("Página " + std::to_string(selected / 12 + 1) + " / " + std::to_string((visible.size() + 11) / 12),
+                           352, 965, 22, muted);
                 }
-                c.text("Página " + std::to_string(selected / 12 + 1) + " / " + std::to_string((visible.size() + 11) / 12),
-                       352, 965, 22, muted);
             }
         } else {
             // Aba Notificações / Fila de Instalação
@@ -675,6 +973,7 @@ struct UI {
             c.text("Notificações & Fila", 530, 62, 20, white, 400);
             c.text("Notificações & Instalações", 352, 148, 44, white);
             c.text("INSTALAÇÃO EM BACKGROUND NO PS4  •  SISTEMA BGFT", 352, 190, 18, cyan, 1200);
+            drawHeaderActivityPill(dlTab);
 
             if (tasks.empty()) {
                 c.text("Nenhuma instalação na fila", 352, 395, 40, white);
@@ -686,29 +985,41 @@ struct UI {
                     const auto& t = tasks[i];
                     int y = 225 + (i - start) * 142;
                     bool active = (i == taskSelected);
+                    bool tAct = isTaskActive(t);
+                    int tPct = taskDisplayPercent(t);
                     c.rect(352, y, 1500, 128, active ? 0x12325c : panel);
                     if (active) c.rect(352, y, 5, 128, cyan);
 
-                    c.text(t.name, 377, y + 34, 27, white, 1080);
+                    drawActivityIcon(t, 408, y + 64, 24, 5, false);
+
+                    c.text(t.name, 456, y + 34, 26, white, 970);
                     std::string modeBadge = t.mode == InstallMode::RemoteBgft   ? "Notificações PS4"
                                           : t.mode == InstallMode::BinLoaderElf ? "Payload ELF"
                                           : t.mode == InstallMode::DirectSave   ? "Download Direto"
                                                                                 : "Download Local";
-                    c.text(modeBadge + (t.taskId >= 0 ? "  #" + std::to_string(t.taskId) : ""), 1470, y + 30, 18, muted, 360);
-                    c.text(installStateLabel(t), 1470, y + 58, 22,
-                           t.state == InstallState::Error ? 0xffa5a5 : cyan, 360);
+                    c.text(modeBadge + (t.taskId >= 0 ? "  #" + std::to_string(t.taskId) : ""), 1460, y + 28, 18, muted, 240);
+                    c.text(installStateLabel(t), 1460, y + 58, 22,
+                           t.state == InstallState::Error ? 0xffa5a5 : (t.state == InstallState::Complete ? 0x34d399 : cyan), 230);
 
-                    double fraction = t.percent >= 0 ? std::min(1.0, double(t.percent) / 100.0)
-                                                     : (t.bytes > 0 ? std::min(1.0, double(t.doneBytes) / t.bytes) : 0.0);
-                    c.rect(377, y + 52, 1050, 8, 0x050912);
-                    c.rect(377, y + 52, int(1050 * fraction), 8, cyan);
+                    std::string pctStr = formatPercentText(tPct);
+                    int pctW = c.textWidth(pctStr, 34);
+                    uint32_t pctCol = t.state == InstallState::Complete ? 0x34d399
+                                    : t.state == InstallState::Error    ? 0xffa5a5
+                                    : t.state == InstallState::Paused   ? 0xfbbf24 : 0x5cb8ff;
+                    c.text(pctStr, 1830 - pctW, y + 72, 34, pctCol, pctW + 8);
 
-                    std::string stats = (t.contentId.empty() ? "PKG" : t.contentId) + "   •   " +
-                                        (t.bytes > 0 ? bytesText(t.doneBytes) + " / " + bytesText(t.bytes) : "Tamanho pendente") +
-                                        (t.percent >= 0 ? "   (" + std::to_string(t.percent) + "%)" : "");
-                    c.text(stats, 377, y + 88, 20, white, 1050);
-                    c.text(installStatusText(t), 377, y + 116, 20,
-                           t.state == InstallState::Error ? 0xffa5a5 : muted, 1450);
+                    drawProgressBar(456, y + 52, 970, 8, tPct, tAct, 0x050912,
+                                    t.state == InstallState::Complete ? 0x34d399 : cyan);
+
+                    std::string sizePart = t.bytes > 0 ? (bytesText(t.doneBytes) + " / " + bytesText(t.bytes))
+                                         : t.doneBytes > 0 ? (bytesText(t.doneBytes) + " baixados")
+                                                           : "Calculando tamanho...";
+                    std::string stats = (t.contentId.empty() ? (t.mode == InstallMode::DirectSave ? "DIRETO" : "PKG") : t.contentId) +
+                                        "   •   " + sizePart +
+                                        (tPct >= 0 ? "   (" + pctStr + ")" : "");
+                    c.text(stats, 456, y + 88, 20, white, 970);
+                    c.text(installStatusText(t), 456, y + 116, 19,
+                           t.state == InstallState::Error ? 0xffa5a5 : muted, 1200);
                 }
             }
         }
@@ -751,6 +1062,7 @@ struct UI {
                 c.text("HOMEBREW PKG", 412, 290, 22, cyan);
                 c.lines(g.title, 412, 345, 28, white, 330, 4);
             }
+            drawDetailProgressWidget(g, shown, isAll);
 
             std::string metaTop = g.category + (g.version.empty() ? "" : "  /  v" + g.version) +
                                   (g.author.empty() ? "" : "  /  " + g.author);
@@ -792,15 +1104,40 @@ struct UI {
                     int idx = rowStart + r;
                     int by = 556 + r * 60;
                     bool activeBtn = (idx == selLink);
+                    const InstallPackage* lt = (idx < nLinks) ? findTaskForItem(g.id, g.links[idx].url) : nullptr;
+                    int batchActive = (idx == nLinks) ? countActiveTasks(g.id) : 0;
+
                     c.rect(810, by, btnW, 50, activeBtn ? cyan : 0x12325c);
                     if (!activeBtn) c.rect(810, by, 5, 50, cyan);
+                    if (lt && isTaskActive(*lt)) {
+                        drawProgressBar(810, by + 46, btnW, 4, taskDisplayPercent(*lt), true,
+                                        activeBtn ? 0x16538f : 0x0a1c34, activeBtn ? bg : 0x5cb8ff);
+                    }
                     std::string bName = idx == nLinks
                         ? "Instalar TODOS (" + std::to_string(nLinks) + " links na fila)"
                         : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
                     if (idx < nLinks && g.links[idx].directDownload) bName += "  [DIRETO]";
                     else if (idx < nLinks && g.links[idx].useBinloader) bName += "  [ELF]";
                     std::string bText = (activeBtn ? "X  " : "   ") + bName;
-                    c.text(bText, 830, by + 33, 24, activeBtn ? bg : white, hasScroll ? 812 : 836);
+                    bool hasRowStatus = (lt != nullptr) || (idx == nLinks && batchActive > 0);
+                    int textMaxW = hasRowStatus ? (hasScroll ? 645 : 668) : (hasScroll ? 812 : 836);
+                    c.text(bText, 830, by + 33, 24, activeBtn ? bg : white, textMaxW);
+
+                    if (lt) {
+                        drawActivityIcon(*lt, 1514, by + 25, 11, 3, activeBtn);
+                        std::string rowStat = lt->state == InstallState::Error
+                                            ? "Erro"
+                                            : formatPercentText(taskDisplayPercent(*lt));
+                        uint32_t rowCol = activeBtn ? bg
+                                        : (lt->state == InstallState::Complete ? 0x34d399
+                                        : lt->state == InstallState::Error     ? 0xffa5a5 : 0x5cb8ff);
+                        c.text(rowStat, 1534, by + 32, 19, rowCol, 108);
+                    } else if (idx == nLinks && batchActive > 0) {
+                        c.spinner(1514, by + 25, 11, 3, spinnerAngle(),
+                                  activeBtn ? 0x16538f : 0x163154, activeBtn ? bg : 0x5cb8ff);
+                        c.text(std::to_string(batchActive) + " at.", 1534, by + 32, 19,
+                               activeBtn ? bg : 0x5cb8ff, 108);
+                    }
                     if (idx < nLinks && !g.links[idx].size.empty()) {
                         c.text(g.links[idx].size, hasScroll ? 1650 : 1674, by + 32, 19, activeBtn ? bg : muted, 155);
                     }
@@ -826,18 +1163,41 @@ struct UI {
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
-                c.rect(810, 675, 1042, 66, cyan);
-                std::string mainActionLabel = shown.directDownload
-                    ? ("X  Baixar Arquivo Direto (" + (shown.directPath.empty() ? std::string("/data/pkg") : shown.directPath) + ")")
-                    : shown.useBinloader
-                          ? "X  Enviar via Payload ELF (BinLoader 127.0.0.1:9090)"
-                          : "X  Instalar em Background (Notificações PS4)";
-                c.text(mainActionLabel, 836, 720, 28, bg, 990);
+                const InstallPackage* singleTask = findTaskForItem(g.id, shown.url);
+                if (!singleTask) singleTask = findTaskForItem(g.id, "");
+                bool singleActive = singleTask && isTaskActive(*singleTask);
+                if (singleActive) {
+                    int sPct = taskDisplayPercent(*singleTask);
+                    drawProgressBar(810, 675, 1042, 66, sPct, true, 0x0d3666, 0x165191);
+                    drawProgressBar(810, 735, 1042, 6, sPct, true, 0x071a33, 0x5cb8ff);
+                    drawActivityIcon(*singleTask, 846, 706, 16, 4, false);
+                    std::string sPctStr = formatPercentText(sPct);
+                    int sPctW = c.textWidth(sPctStr, 30);
+                    c.text(sPctStr, 1826 - sPctW, 718, 30, 0x5cb8ff, sPctW + 8);
+                    std::string actLabel = singleTask->mode == InstallMode::DirectSave
+                        ? ("Baixando direto para " + (singleTask->path.empty() ? std::string("/data/pkg") : singleTask->path) + "...")
+                        : singleTask->mode == InstallMode::BinLoaderElf
+                              ? "Enviando payload ELF (BinLoader 127.0.0.1:9090)..."
+                              : singleTask->mode == InstallMode::LocalStorageEx
+                                    ? "Baixando PKG localmente no PS4..."
+                                    : "Baixando em Notificações do PS4...";
+                    c.text(actLabel, 876, 716, 25, white, std::max(240, 930 - sPctW));
+                } else {
+                    c.rect(810, 675, 1042, 66, cyan);
+                    std::string mainActionLabel = shown.directDownload
+                        ? ("X  Baixar Arquivo Direto (" + (shown.directPath.empty() ? std::string("/data/pkg") : shown.directPath) + ")")
+                        : shown.useBinloader
+                              ? "X  Enviar via Payload ELF (BinLoader 127.0.0.1:9090)"
+                              : "X  Instalar em Background (Notificações PS4)";
+                    c.text(mainActionLabel, 836, 720, 28, bg, 990);
+                }
                 c.text(shown.directDownload
-                           ? "R3  Ver Notificações     CÍRCULO  Voltar ao catálogo"
-                           : "L3  Baixar no App + Instalar (Local)     R3  Ver Notificações",
+                           ? (singleActive ? "R3  Ver Notificações     CÍRCULO  Voltar (continua baixando)"
+                                           : "R3  Ver Notificações     CÍRCULO  Voltar ao catálogo")
+                           : (singleActive ? "L3  Baixar no App (Local)     R3  Notificações     CÍRCULO  Voltar"
+                                           : "L3  Baixar no App + Instalar (Local)     R3  Ver Notificações"),
                        810, 780, 24, white, 1042);
-                if (!shown.directDownload) {
+                if (!shown.directDownload && !singleActive) {
                     c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
                 }
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);

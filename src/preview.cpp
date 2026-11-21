@@ -24,12 +24,30 @@ int main(int argc, char** argv) {
     ui.filter();
 
     if (argc > 1 && std::string(argv[1]) == "details") ui.action(CONFIRM);
+    if (argc > 1 && std::string(argv[1]) == "details-downloading") {
+        ui.action(CONFIRM);
+        InstallPackage p;
+        p.id = 1;
+        p.itemId = g.id;
+        p.url = g.url;
+        p.name = g.title;
+        p.mode = InstallMode::DirectSave;
+        p.path = "/data/pkg/apollo.pkg";
+        p.bytes = g.sizeBytes;
+        p.doneBytes = g.sizeBytes * 42 / 100;
+        p.percent = 42;
+        p.state = InstallState::Downloading;
+        p.note = "Baixando em /data/pkg/apollo.pkg...";
+        ui.tasks.push_back(p);
+        ui.animFrame = 12;
+    }
     if (argc > 1 && std::string(argv[1]) == "search") ui.action(SEARCH);
     if (argc > 1 && std::string(argv[1]) == "server") ui.action(SERVER_CONFIG);
     if (argc > 1 && std::string(argv[1]) == "downloads") {
         ui.tab = ui.downloadsTab();
         InstallPackage p;
         p.id = 1;
+        p.itemId = g.id;
         p.taskId = 42;
         p.name = "Apollo Save Tool";
         p.contentId = g.contentId;
@@ -39,6 +57,7 @@ int main(int argc, char** argv) {
         p.state = InstallState::Installing;
         p.note = "Baixando em Notificações do PS4";
         ui.tasks.push_back(p);
+        ui.animFrame = 12;
     }
 
     ui.draw();
