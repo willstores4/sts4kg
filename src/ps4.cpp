@@ -14,6 +14,7 @@
 #include <orbis/VideoOut.h>
 #include <orbis/libkernel.h>
 #include <orbis/Pad.h>
+#include <orbis/SystemService.h>
 #include <orbis/UserService.h>
 
 static std::string DATA;
@@ -745,5 +746,11 @@ int main() {
             ui.draw();
         }
         display.flip(ui.c, frame);
+        static bool splashHidden = false;
+        if (!splashHidden) {
+            splashHidden = true;
+            int32_t splashRes = sceSystemServiceHideSplashScreen();
+            installLog("Splash screen hidden result=0x%08X", (unsigned)splashRes);
+        }
     }
 }
