@@ -9,6 +9,7 @@
 
 static std::string root;
 static std::atomic<int> remoteReg(0), storeReg(0), storageReg(0), binLoaderSent(0), started(0), polled(0), paused(0), resumed(0), stopped(0), headerFetched(0), downloaded(0), appended(0), notified(0);
+static std::atomic<bool> allowComplete(false);
 
 static void pauseMs(int n) {
     struct timespec ts = {n / 1000, (n % 1000) * 1000000};
@@ -62,10 +63,10 @@ static bool resumeFn(int, std::string&) { ++resumed; return true; }
 static bool stopFn(int, std::string&) { ++stopped; return true; }
 static bool pollFn(int, uint64_t& done, uint64_t& total, int& percent, bool& complete, std::string&) {
     ++polled;
-    done = 4096;
+    complete = allowComplete.load();
+    done = complete ? 4096 : 512;
     total = 4096;
-    percent = 100;
-    complete = true;
+    percent = complete ? 100 : 12;
     return true;
 }
 static bool fetchUrlFn(const std::string& url, std::string& out, size_t, std::string&) {
@@ -163,11 +164,13 @@ int main() {
         g.url = "http://192.168.1.2:8765/pkgs/a.pkg";
         // Sem contentId nem sizeBytes: deve buscar header automaticamente!
         std::string msg;
+        allowComplete = false;
         int id1 = installer.enqueueHomebrew(g, InstallMode::RemoteBgft, msg);
         assert(id1 > 0);
         // Duplicata enquanto ativo não cria nova tarefa
         int idDup = installer.enqueueHomebrew(g, InstallMode::RemoteBgft, msg);
         assert(idDup == id1);
+        allowComplete = true;
 
         uint64_t stamp = 0;
         std::vector<InstallPackage> view;

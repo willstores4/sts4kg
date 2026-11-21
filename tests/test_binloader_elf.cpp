@@ -1,4 +1,6 @@
+#ifndef PORTAL_HOST
 #define PORTAL_HOST
+#endif
 #include "../src/binloader_elf.h"
 #include <atomic>
 #include <cassert>
