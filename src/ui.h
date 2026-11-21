@@ -1097,10 +1097,10 @@ struct UI {
         const int dlTab = downloadsTab();
         c.rect(0, 0, 1920, 1080, bg);
 
-        // Cabeçalho superior
-        c.rect(315, 0, 1605, 204, 0x080e18);
-        c.rect(315, 203, 1605, 1, 0x1a2638);
-        c.rect(315, 0, 2, 204, 0x0f1c30);
+        // Cabeçalho superior compacto
+        c.rect(315, 0, 1605, 114, 0x080e18);
+        c.rect(315, 113, 1605, 1, 0x1a2638);
+        c.rect(315, 0, 2, 114, 0x0f1c30);
         c.rect(314, 0, 1, 989, rule);
 
         // Barra lateral (marca + categorias dinâmicas)
@@ -1155,38 +1155,42 @@ struct UI {
         c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 955, 19, muted, 265);
 
         // Cabeçalho principal
-        c.text(storeName + " /", 352, 62, 20, cyan, 260);
-        c.text(tabTitle(tab), 530, 62, 20, white, 500);
-        c.text(query.empty() ? "Loja WILLGAME PS4" : "Busca: " + query, 352, 124, 44, white, 1220);
+        c.text(storeName + " /", 352, 52, 20, cyan, 260);
+        c.text(tabTitle(tab), 530, 52, 20, white, 500);
 
         const char* sorts[] = {"Mais recentes", "Nome A-Z", "Menor tamanho", "Maior tamanho"};
         c.rounded(1622, 25, 276, 42, 5, 0x0d1626);
         c.rect(1622, 25, 276, 1, rule);
         c.rect(1622, 66, 276, 1, rule);
         c.text("ORDEM  " + std::string(sorts[sort]), 1636, 52, 18, muted, 250);
-        c.text(std::to_string(visible.size()) + " itens   |   " + status, 352, 173, 20, muted, 1530);
+
+        std::string countLine = std::to_string(visible.size()) + (visible.size() == 1 ? " item" : " itens");
+        if (!query.empty()) countLine += "   •   Busca: " + query;
+        bool syncErr = status.compare(0, 4, "Erro") == 0 || status.compare(0, 16, "Servidor offline") == 0;
+        if (syncErr) countLine += "   |   " + status;
+        c.text(countLine, 352, 92, 20, syncErr ? uint32_t(0xffa5a5) : muted, 1530);
 
         // Grid do catálogo
         if (tab != dlTab) {
             drawHeaderActivityPill(dlTab);
             if (!(detail && current())) {
                 if (visible.empty()) {
-                    c.text(games.empty() ? "Nenhum homebrew sincronizado" : "Nenhum item encontrado", 352, 390, 40, white);
+                    c.text(games.empty() ? "Nenhum homebrew sincronizado" : "Nenhum item encontrado", 352, 280, 40, white);
                     std::string hint = games.empty()
                         ? "Inicie o Painel Web e pressione OPTIONS para sincronizar (" + serverUrl + ") ou L3 para trocar o IP."
                         : (tab == 1 ? "Pressione QUADRADO em um homebrew para salvar nos favoritos."
                                     : "Pressione TRIÂNGULO para buscar ou CÍRCULO para limpar filtros.");
-                    c.lines(hint, 352, 448, 24, muted, 1400, 3);
+                    c.lines(hint, 352, 338, 24, muted, 1400, 3);
                 } else {
                     int start = selected / 12 * 12;
                     for (int i = start; i < std::min(start + 12, int(visible.size())); ++i) {
                         const auto& g = games[visible[i]];
                         int k = i - start;
                         int x = 352 + (k % 6) * 257;
-                        int y = 214 + (k / 6) * 362;
+                        int y = 132 + (k / 6) * 396;
                         bool active = (i == selected);
-                        if (active) c.rounded(x - 2, y - 2, 238, 332, 6, cyan);
-                        c.rounded(x, y, 234, 328, 5, panel);
+                        if (active) c.rounded(x - 2, y - 2, 238, 368, 6, cyan);
+                        c.rounded(x, y, 234, 364, 5, panel);
                         drawCase(g, x, y, 234);
                         if (const InstallPackage* cardTask = findDirectTaskForItem(g.id)) {
                             int cardPct = taskDisplayPercent(*cardTask);
@@ -1206,15 +1210,15 @@ struct UI {
                         }
 
                         std::string ver = g.version.empty() ? "HB" : "v" + g.version;
-                        c.text(ver, x + 11, y + 257, 17, white, 75);
-                        c.text(g.category, x + 86, y + 257, 16, cyan, 126);
-                        if (favorites.count(g.id)) c.text("*", x + 216, y + 257, 18, cyan);
-                        c.lines(g.title, x + 11, y + 282, 19, white, 212, 2);
+                        c.text(ver, x + 11, y + 260, 17, white, 75);
+                        c.text(g.category, x + 86, y + 260, 16, cyan, 126);
+                        if (favorites.count(g.id)) c.text("*", x + 216, y + 260, 18, cyan);
+                        c.lines(g.title, x + 11, y + 288, 19, white, 212, 2);
                         std::string sub = g.size.empty() ? g.author : g.size;
-                        c.text(sub, x + 11, y + 322, 17, muted, 212);
+                        c.text(sub, x + 11, y + 344, 17, muted, 212);
                     }
                     c.text("Página " + std::to_string(selected / 12 + 1) + " / " + std::to_string((visible.size() + 11) / 12),
-                           352, 965, 22, muted);
+                           352, 948, 22, muted);
                 }
             }
         } else {
