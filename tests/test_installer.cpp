@@ -295,6 +295,60 @@ int main() {
         }
         assert(done && binLoaderSent == 2);
 
+        // Testar resolução de caminho e download direto em pasta ou arquivo específico
+        std::string outDir, outFile, pErr;
+        bool explicitFile = false;
+        assert(resolveDirectDownloadTarget("/data/", "http://192.168.1.2:8765/files/goldhen_v2.4.bin", "GoldHEN", false,
+                                           outDir, outFile, explicitFile, pErr, false));
+        assert(!explicitFile && outDir == "/data" && outFile == "/data/goldhen_v2.4.bin");
+
+        assert(resolveDirectDownloadTarget("/data/pkg", "http://192.168.1.2:8765/api/pkg/12.pkg?link=0", "Apollo Save", false,
+                                           outDir, outFile, explicitFile, pErr, false));
+        assert(!explicitFile && outDir == "/data/pkg" && outFile == "/data/pkg/Apollo Save.pkg");
+
+        assert(resolveDirectDownloadTarget("/data/pkg/meu_arquivo.bin", "http://192.168.1.2:8765/files/x.pkg", "X", false,
+                                           outDir, outFile, explicitFile, pErr, false));
+        assert(explicitFile && outDir == "/data/pkg" && outFile == "/data/pkg/meu_arquivo.bin");
+
+        assert(!resolveDirectDownloadTarget("relativo/pkg", "http://192.168.1.2:8765/a.bin", "A", false,
+                                            outDir, outFile, explicitFile, pErr, false));
+        assert(!resolveDirectDownloadTarget("/data/../etc", "http://192.168.1.2:8765/a.bin", "A", false,
+                                            outDir, outFile, explicitFile, pErr, false));
+
+        // Download direto de arquivo não-PKG criando subpastas recursivamente sem registrar no BGFT
+        std::string directTarget = root + "/custom/subpasta";
+        Game g9 = g;
+        g9.id = 9;
+        g9.title = "Payload GoldHEN";
+        g9.url = "http://192.168.1.2:8765/files/goldhen.bin";
+        int storageBeforeDirect = storageReg.load();
+        int dlBeforeDirect = downloaded.load();
+        int id9 = installer.enqueueDirectDownload(g9, directTarget, false, msg);
+        assert(id9 > id8);
+        done = false;
+        std::string savedPath;
+        for (int i = 0; i < 300; i++) {
+            installer.snapshot(stamp, view);
+            for (auto& item : view) {
+                if (item.id == id9 && item.state == InstallState::Complete) {
+                    done = true;
+                    savedPath = item.path;
+                }
+            }
+            if (done) break;
+            pauseMs(10);
+        }
+        assert(done && savedPath == directTarget + "/goldhen.bin");
+        assert(downloaded == dlBeforeDirect + 1 && storageReg == storageBeforeDirect);
+        struct stat stDirect;
+        assert(stat(savedPath.c_str(), &stDirect) == 0 && stDirect.st_size == 4096);
+        installer.removeTask(id9);
+        // Remover a tarefa da lista nunca deve apagar o arquivo baixado diretamente pelo usuário
+        assert(stat(savedPath.c_str(), &stDirect) == 0);
+        unlink(savedPath.c_str());
+        rmdir((root + "/custom/subpasta").c_str());
+        rmdir((root + "/custom").c_str());
+
         installer.removeTask(id8);
         installer.removeTask(id7);
         installer.removeTask(id6);

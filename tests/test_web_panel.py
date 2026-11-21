@@ -667,6 +667,111 @@ class WebPanelTests(unittest.TestCase):
             manifest_url.encode("utf-8"),
         )
 
+    def test_08_direct_download_path_and_upload(self):
+        # 1. Upload de arquivo qualquer (não-PKG) com X-Allow-Direct-File: 1
+        bin_blob = b"\xde\xad\xbe\xefGOLDHEN_PAYLOAD"
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        conn.request(
+            "POST",
+            "/api/admin/upload/pkg",
+            body=bin_blob,
+            headers={
+                "X-Filename": "goldhen_v2.4.bin",
+                "X-Allow-Direct-File": "1",
+                "Content-Length": str(len(bin_blob)),
+            },
+        )
+        resp = conn.getresponse()
+        up_data = json.loads(resp.read().decode("utf-8"))
+        conn.close()
+        self.assertEqual(resp.status, 201)
+        self.assertTrue(up_data["pkg_url"].endswith(".bin"))
+
+        # 2. Rejeita caminho inválido sem / inicial ou com ..
+        status, _, err_rel = self.request("POST", "/api/admin/homebrews", {
+            "title": "Invalido Relativo",
+            "pkg_url": up_data["pkg_url"],
+            "direct_download": True,
+            "direct_path": "data/pkg",
+        })
+        self.assertEqual(status, 400)
+        self.assertIn("começar com /", json.loads(err_rel)["error"])
+
+        status, _, _ = self.request("POST", "/api/admin/homebrews", {
+            "title": "Invalido Traversal",
+            "pkg_url": up_data["pkg_url"],
+            "direct_download": True,
+            "direct_path": "/data/../etc",
+        })
+        self.assertEqual(status, 400)
+
+        # 3. Cadastra item principal com /data/ e link extra com proxy + /data/pkg
+        class DirectUpstream(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(bin_blob)))
+                self.end_headers()
+                self.wfile.write(bin_blob)
+
+            def log_message(self, *args):
+                return
+
+        up_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), DirectUpstream)
+        threading.Thread(target=up_srv.serve_forever, daemon=True).start()
+        self.addCleanup(up_srv.shutdown)
+        self.addCleanup(up_srv.server_close)
+        ext_url = f"http://127.0.0.1:{up_srv.server_address[1]}/files/cheats.zip"
+
+        status, _, created_raw = self.request("POST", "/api/admin/homebrews", {
+            "title": "GoldHEN Direct",
+            "primary_label": "Payload BIN",
+            "pkg_url": up_data["pkg_url"],
+            "pkg_filename": up_data["pkg_filename"],
+            "size_bytes": up_data["size_bytes"],
+            "direct_download": True,
+            "direct_path": "/data/",
+            "use_binloader": True,
+            "extra_links": [{
+                "label": "Pacote Extra ZIP",
+                "url": ext_url,
+                "proxy_pkg": True,
+                "direct_download": True,
+                "direct_path": "/data/pkg",
+            }],
+        })
+        self.assertEqual(status, 201)
+        created = json.loads(created_raw)["item"]
+        self.assertEqual(created["direct_download"], 1)
+        self.assertEqual(created["direct_path"], "/data/")
+        self.assertEqual(created["use_binloader"], 0)
+        self.assertTrue(created["extra_links"][0]["direct_download"])
+        self.assertEqual(created["extra_links"][0]["direct_path"], "/data/pkg")
+
+        status, _, cat_raw = self.request("GET", "/api/catalog.json")
+        self.assertEqual(status, 200)
+        cat = json.loads(cat_raw)
+        exported = cat["items"][0]
+        self.assertTrue(exported["direct_download"])
+        self.assertEqual(exported["direct_path"], "/data/")
+        self.assertFalse(exported["use_binloader"])
+        self.assertEqual(exported["links"][0]["direct_path"], "/data/")
+        self.assertTrue(exported["links"][1]["direct_download"])
+        self.assertEqual(exported["links"][1]["direct_path"], "/data/pkg")
+        self.assertIn("/cheats.zip?link=1", exported["links"][1]["url"])
+
+        # Proxy route preservando extensão original entrega os bytes exatos
+        p_parsed = urllib.parse.urlparse(exported["links"][1]["url"])
+        status, _, proxied_zip = self.request("GET", f"{p_parsed.path}?{p_parsed.query}")
+        self.assertEqual(status, 200)
+        self.assertEqual(proxied_zip, bin_blob)
+
+        # Round-trip import-json preservando direct_download e direct_path
+        status, _, imp_raw = self.request(
+            "POST", "/api/admin/import-json", body=cat_raw, headers={"Content-Type": "application/json"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(imp_raw)["imported"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

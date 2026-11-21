@@ -1,12 +1,16 @@
 #pragma once
 #include "catalog.h"
 #include "network_ps4.h"
+#include "path_info.h"
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <string>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <vector>
 
-enum class InstallMode { RemoteBgft = 0, LocalStorageEx = 1, BinLoaderElf = 2 };
+enum class InstallMode { RemoteBgft = 0, LocalStorageEx = 1, BinLoaderElf = 2, DirectSave = 3 };
 
 enum class InstallState {
     Queued = 0,
@@ -56,8 +60,22 @@ inline const char* installStateName(InstallState s) {
     }
 }
 
+inline std::string installStateLabel(const InstallPackage& p) {
+    if (p.state == InstallState::Complete) {
+        if (p.mode == InstallMode::DirectSave) return "Salvo";
+        if (p.mode == InstallMode::BinLoaderElf) return "Enviado";
+    }
+    return installStateName(p.state);
+}
+
 inline std::string installStatusText(const InstallPackage& p) {
-    if (p.state == InstallState::Complete) return "Instalado";
+    if (p.state == InstallState::Complete) {
+        if (p.mode == InstallMode::DirectSave) {
+            return p.note.empty() ? ("Salvo em " + p.path) : p.note;
+        }
+        if (p.mode == InstallMode::BinLoaderElf && !p.note.empty()) return p.note;
+        return "Instalado";
+    }
     if (p.state == InstallState::Downloading) {
         if (p.percent >= 0 && p.percent <= 100) return "Baixando  " + std::to_string(p.percent) + "%";
         return "Baixando";
@@ -67,6 +85,191 @@ inline std::string installStatusText(const InstallPackage& p) {
         return "Baixando em Notificações";
     }
     return p.note.empty() ? std::string(installStateName(p.state)) : p.note;
+}
+
+inline int directHexDigit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+inline std::string sanitizeDownloadFilename(const std::string& raw, const std::string& fallback = "arquivo.bin") {
+    std::string out;
+    out.reserve(raw.size());
+    for (unsigned char c : trimStr(raw)) {
+        if (c < 0x20 || c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            out += '_';
+        } else {
+            out += char(c);
+        }
+    }
+    while (!out.empty() && (out.back() == ' ' || out.back() == '.')) out.pop_back();
+    if (out.empty() || out == "." || out == "..") return fallback;
+    if (out.size() > 160) {
+        auto dot = out.rfind('.');
+        std::string ext = (dot != std::string::npos && dot > 0 && out.size() - dot <= 16) ? out.substr(dot) : "";
+        out = out.substr(0, 160 - ext.size()) + ext;
+    }
+    return out;
+}
+
+inline std::string extractDownloadFilename(const std::string& url, const std::string& fallbackTitle) {
+    size_t end = url.find_first_of("?#");
+    std::string cleanUrl = end == std::string::npos ? url : url.substr(0, end);
+    size_t scheme = cleanUrl.find("://");
+    size_t pathStart = (scheme != std::string::npos) ? cleanUrl.find('/', scheme + 3) : 0;
+    std::string urlPath = (pathStart != std::string::npos) ? cleanUrl.substr(pathStart) : "";
+
+    auto fallbackPkgOrBin = [&](const char* ext) {
+        std::string base = trimStr(fallbackTitle);
+        if (base.empty()) base = "arquivo";
+        return sanitizeDownloadFilename(base + ext, std::string("arquivo") + ext);
+    };
+
+    // Synthetic proxy routes (/api/pkg/12.pkg) and .manifest.json descriptors don't carry the final file name
+    if (urlPath.compare(0, 9, "/api/pkg/") == 0 && !fallbackTitle.empty()) {
+        size_t nextSlash = urlPath.find('/', 9);
+        if (nextSlash == std::string::npos) {
+            return fallbackPkgOrBin(".pkg");
+        }
+    }
+    std::string lowUrlPath = lower(urlPath);
+    if (lowUrlPath.size() >= 14 &&
+        lowUrlPath.compare(lowUrlPath.size() - 14, 14, ".manifest.json") == 0 &&
+        !fallbackTitle.empty()) {
+        return fallbackPkgOrBin(".pkg");
+    }
+
+    size_t slash = urlPath.rfind('/');
+    std::string rawName = (slash != std::string::npos) ? urlPath.substr(slash + 1) : "";
+    std::string decoded;
+    for (size_t i = 0; i < rawName.size(); ++i) {
+        if (rawName[i] == '%' && i + 2 < rawName.size()) {
+            int hi = directHexDigit(rawName[i + 1]);
+            int lo = directHexDigit(rawName[i + 2]);
+            if (hi >= 0 && lo >= 0 && (hi != 0 || lo != 0)) {
+                decoded += char((hi << 4) | lo);
+                i += 2;
+                continue;
+            }
+        }
+        decoded += rawName[i];
+    }
+    std::string safe = sanitizeDownloadFilename(decoded, "");
+    if (!safe.empty()) return safe;
+    return fallbackPkgOrBin(".bin");
+}
+
+inline std::string normalizePs4PathInput(std::string raw, bool& outTrailingSlash, std::string& error) {
+    outTrailingSlash = false;
+    error.clear();
+    raw = trimStr(raw);
+    for (char& c : raw) {
+        if ((unsigned char)c < 0x20) { error = "Caminho contém caracteres inválidos"; return ""; }
+        if (c == '\\') c = '/';
+    }
+    if (raw.empty()) {
+        error = "Digite um caminho no PS4 (ex: /data/ ou /data/pkg)";
+        return "";
+    }
+    if (raw[0] != '/') {
+        error = "O caminho deve começar com / (ex: /data/ ou /data/pkg)";
+        return "";
+    }
+    outTrailingSlash = (raw.size() > 1 && raw.back() == '/');
+
+    std::vector<std::string> parts;
+    size_t i = 0;
+    while (i < raw.size()) {
+        while (i < raw.size() && raw[i] == '/') ++i;
+        if (i >= raw.size()) break;
+        size_t j = raw.find('/', i);
+        if (j == std::string::npos) j = raw.size();
+        std::string seg = raw.substr(i, j - i);
+        i = j;
+        if (seg == ".") continue;
+        if (seg == "..") {
+            error = "Caminho inválido (não use '..')";
+            return "";
+        }
+        parts.push_back(seg);
+    }
+    if (parts.empty()) {
+        error = "Informe uma subpasta como /data/ ou /data/pkg";
+        return "";
+    }
+    std::string out;
+    for (const auto& s : parts) out += "/" + s;
+    return out;
+}
+
+inline std::string normalizeDirectDownloadDirInput(const std::string& raw, std::string& error) {
+    bool trailingSlash = false;
+    std::string clean = normalizePs4PathInput(raw, trailingSlash, error);
+    if (clean.empty()) return "";
+    return trailingSlash ? (clean + "/") : clean;
+}
+
+inline bool resolveDirectDownloadTarget(const std::string& rawInput, const std::string& url,
+                                        const std::string& fallbackTitle, bool forceDir,
+                                        std::string& outDir, std::string& outFilePath,
+                                        bool& outExplicitFile, std::string& error,
+                                        bool probeExisting = true) {
+    outDir.clear();
+    outFilePath.clear();
+    outExplicitFile = false;
+    bool trailingSlash = false;
+    std::string clean = normalizePs4PathInput(rawInput, trailingSlash, error);
+    if (clean.empty()) return false;
+
+    bool existsDir = false, existsReg = false;
+    if (probeExisting) {
+        int fd = open(clean.c_str(), O_RDONLY);
+        if (fd >= 0) {
+            struct stat st;
+            if (portalDescriptorInfo(fd, &st) == 0) {
+                existsDir = S_ISDIR(st.st_mode);
+                existsReg = !existsDir;
+            }
+            close(fd);
+        }
+    }
+
+    size_t lastSlash = clean.rfind('/');
+    std::string lastSeg = clean.substr(lastSlash + 1);
+    size_t dot = lastSeg.rfind('.');
+    bool hasExt = (dot != std::string::npos && dot > 0 && dot + 1 < lastSeg.size());
+
+    bool isDir = false;
+    if (forceDir) {
+        if (existsReg) {
+            error = "Para vários arquivos, informe uma pasta (ex: /data/pkg)";
+            return false;
+        }
+        isDir = true;
+    } else if (trailingSlash || existsDir) {
+        isDir = true;
+    } else if (existsReg) {
+        isDir = false;
+    } else {
+        isDir = !hasExt;
+    }
+
+    if (isDir) {
+        outDir = clean;
+        outFilePath = clean + "/" + extractDownloadFilename(url, fallbackTitle);
+        outExplicitFile = false;
+        return true;
+    }
+    if (lastSlash == 0) {
+        error = "Escolha uma pasta gravável como /data/ ou /data/pkg";
+        return false;
+    }
+    outDir = clean.substr(0, lastSlash);
+    outFilePath = clean;
+    outExplicitFile = true;
+    return true;
 }
 
 struct InstallBackend {
@@ -127,6 +330,7 @@ public:
     bool start();
 
     int enqueueHomebrew(const Game& g, InstallMode mode, std::string& outMessage);
+    int enqueueDirectDownload(const Game& g, const std::string& destInput, bool forceDir, std::string& outMessage);
     void togglePause(int id);
     void retryTask(int id);
     void cancelTask(int id);

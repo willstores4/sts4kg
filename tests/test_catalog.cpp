@@ -122,17 +122,17 @@ int main() {
     ui.action(BACK);
     assert(ui.query.empty());
 
-    // Detalhes -> Instalar em Background (Notificações) e Local
+    // Detalhes -> Instalar em Background (Notificações) e Local (mantém detalhes aberto até CÍRCULO)
     ui.action(CONFIRM);
     assert(ui.detail);
     ui.action(CONFIRM);
-    assert(ui.installBgRequest && ui.installItem.id == ui.current()->id);
+    assert(ui.detail && ui.installBgRequest && ui.installItem.id == ui.current()->id);
     ui.installBgRequest = false;
     ui.action(LOCAL_INSTALL);
-    assert(ui.installLocalRequest);
+    assert(ui.detail && ui.installLocalRequest);
     ui.installLocalRequest = false;
     ui.action(BINLOADER_INSTALL);
-    assert(ui.installBinLoaderRequest);
+    assert(ui.detail && ui.installBinLoaderRequest);
     ui.installBinLoaderRequest = false;
     ui.action(BACK);
     assert(!ui.detail);
@@ -164,7 +164,8 @@ int main() {
                 "use_binloader": true,
                 "links": [
                     {"label": "Base", "url": "/pkgs/base.pkg", "size": "4 KB", "size_bytes": 4096, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "use_binloader": false},
-                    {"label": "Update v1.05", "url": "/pkgs/update.pkg", "size": "2 KB", "size_bytes": 2048, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "content_type": 27, "use_binloader": true}
+                    {"label": "Update v1.05", "url": "/pkgs/update.pkg", "size": "2 KB", "size_bytes": 2048, "content_id": "IV0000-APOL00004_00-APOLLOSAVETOOL04", "content_type": 27, "use_binloader": true},
+                    {"label": "Arquivo Direto", "url": "/files/goldhen.bin", "size": "512 B", "size_bytes": 512, "direct_download": true, "direct_path": "/data/pkg"}
                 ]
             },
             {
@@ -173,24 +174,40 @@ int main() {
                 "category": "Aplicativos",
                 "pkg_url": "/pkgs/p0.pkg",
                 "split_urls": ["/pkgs/p0.pkg", "/pkgs/p1.pkg"]
+            },
+            {
+                "id": 23,
+                "title": "GoldHEN Direct",
+                "category": "Aplicativos",
+                "pkg_url": "/files/goldhen.bin",
+                "direct_download": true,
+                "direct_path": "/data/"
             }
         ]
     })", "http://192.168.1.2:8765", multiCat, err));
-    assert(multiCat.items.size() == 2);
-    assert(multiCat.items[0].links.size() == 2);
+    assert(multiCat.items.size() == 3);
+    assert(multiCat.items[0].links.size() == 3);
     assert(multiCat.items[1].splitUrls.size() == 2);
+    assert(multiCat.items[2].directDownload && multiCat.items[2].directPath == "/data/");
 
     auto multiRound = loadCatalog(serialize(multiCat.items));
-    assert(multiRound.size() == 2);
+    assert(multiRound.size() == 3);
     assert(multiRound[0].useBinloader);
     assert(!multiRound[0].links[0].useBinloader);
-    assert(multiRound[0].links.size() == 2 && multiRound[0].links[1].label == "Update v1.05" && multiRound[0].links[1].useBinloader);
+    assert(multiRound[0].links.size() == 3 && multiRound[0].links[1].label == "Update v1.05" && multiRound[0].links[1].useBinloader);
+    assert(multiRound[0].links[2].directDownload && multiRound[0].links[2].directPath == "/data/pkg");
     assert(multiRound[1].splitUrls.size() == 2);
+    assert(multiRound[2].directDownload && multiRound[2].directPath == "/data/");
 
     ui.tab = 0;
     ui.games = multiRound;
     ui.filter();
-    ui.selected = (ui.games[ui.visible[0]].id == 20) ? 0 : 1;
+    int idxMulti = -1;
+    for (size_t vi = 0; vi < ui.visible.size(); ++vi) {
+        if (ui.games[ui.visible[vi]].id == 20) { idxMulti = int(vi); break; }
+    }
+    assert(idxMulti >= 0);
+    ui.selected = idxMulti;
     ui.action(CONFIRM); // abre detalhes de App Multi
     assert(ui.detail && ui.detailLink == 0);
     ui.action(DOWN); // seleciona Update v1.05
@@ -198,15 +215,26 @@ int main() {
     ui.action(CONFIRM);
     assert(ui.installBgRequest && ui.installItem.url == "http://192.168.1.2:8765/pkgs/update.pkg" && ui.installItem.useBinloader);
     ui.installBgRequest = false;
-    ui.action(DOWN); // seleciona "Instalar TODOS"
+    ui.action(DOWN); // seleciona Arquivo Direto
     assert(ui.detailLink == 2);
+    ui.action(CONFIRM); // apenas aperta X no app usando o caminho configurado no painel
+    assert(ui.detail && ui.installBgRequest && ui.installItem.directDownload && ui.installItem.directPath == "/data/pkg");
+    ui.installBgRequest = false;
+    ui.draw();
+    ui.action(DOWN); // seleciona "Instalar TODOS"
+    assert(ui.detailLink == 3);
     ui.action(CONFIRM);
-    assert(ui.installBgRequest && ui.installBatch.size() == 2);
+    assert(ui.installBgRequest && ui.installBatch.size() == 3);
     ui.draw();
     ui.action(BACK);
 
     // PKG dividido mantém um único botão (sem lista de links separados)
-    ui.selected = (ui.games[ui.visible[0]].id == 21) ? 0 : 1;
+    int idxSplit = -1;
+    for (size_t vi = 0; vi < ui.visible.size(); ++vi) {
+        if (ui.games[ui.visible[vi]].id == 21) { idxSplit = int(vi); break; }
+    }
+    assert(idxSplit >= 0);
+    ui.selected = idxSplit;
     ui.action(CONFIRM);
     assert(ui.detail && ui.detailLink == 0);
     ui.action(DOWN);

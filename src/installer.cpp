@@ -73,6 +73,45 @@ static bool removeDirTree(const std::string& path) {
     return unlink(path.c_str()) == 0;
 }
 
+static bool isDirPath(const std::string& path) {
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd >= 0) {
+        struct stat st;
+        bool isDir = portalDescriptorInfo(fd, &st) == 0 && S_ISDIR(st.st_mode);
+        close(fd);
+        if (isDir) return true;
+    }
+    DIR* d = opendir(path.c_str());
+    if (d) {
+        closedir(d);
+        return true;
+    }
+    return false;
+}
+
+static bool ensureDirTree(const std::string& dir, std::string& error) {
+    if (dir.empty() || dir[0] != '/') {
+        error = "Pasta de destino inválida";
+        return false;
+    }
+    if (isDirPath(dir)) return true;
+    for (size_t i = 1; i <= dir.size(); ++i) {
+        if (i < dir.size() && dir[i] != '/') continue;
+        std::string sub = dir.substr(0, i);
+        if (sub.empty()) continue;
+        if (mkdir(sub.c_str(), 0777) == 0) continue;
+        if (isDirPath(sub)) continue;
+        installLog("mkdir %s failed: errno=%d", sub.c_str(), errno);
+        error = "Não foi possível criar a pasta " + sub;
+        return false;
+    }
+    if (!isDirPath(dir)) {
+        error = "Destino não é uma pasta válida: " + dir;
+        return false;
+    }
+    return true;
+}
+
 PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendApi)
     : root(std::move(rootDir)), backend(backendApi) {
     pthread_mutex_init(&mutex, nullptr);
@@ -103,7 +142,8 @@ PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendAp
         int m = atoi(f[3].c_str());
         t.mode = m == 1 ? InstallMode::LocalStorageEx
                : m == 2 ? InstallMode::BinLoaderElf
-               : InstallMode::RemoteBgft;
+               : m == 3 ? InstallMode::DirectSave
+                        : InstallMode::RemoteBgft;
         int st = atoi(f[4].c_str());
         if (t.id <= 0 || st < 0 || st > 8) continue;
         t.state = InstallState(st);
@@ -232,9 +272,13 @@ int PackageInstaller::enqueueHomebrew(const Game& g, InstallMode mode, std::stri
                  ? "Enviando para Notificações do PS4..."
                  : mode == InstallMode::BinLoaderElf
                        ? "Gerando ELF para BinLoader (127.0.0.1:9090)..."
-                       : "Aguardando download local...";
+                       : mode == InstallMode::DirectSave
+                             ? ("Baixando em " + p.path)
+                             : "Aguardando download local...";
     if (mode == InstallMode::LocalStorageEx) {
         p.path = root + "/downloads/" + std::to_string(p.id) + "/package.pkg";
+    } else if (mode == InstallMode::DirectSave && p.path.empty()) {
+        p.path = "/data/pkg/" + extractDownloadFilename(g.url, g.title);
     }
     tasks.insert(tasks.begin(), p);
     saveLocked();
@@ -243,7 +287,60 @@ int PackageInstaller::enqueueHomebrew(const Game& g, InstallMode mode, std::stri
                      ? "Adicionado! Iniciando instalação em background nas Notificações do PS4..."
                      : mode == InstallMode::BinLoaderElf
                            ? "Gerando payload .ELF e enviando para BinLoader (127.0.0.1:9090)..."
-                           : "Adicionado à fila de download local.";
+                           : mode == InstallMode::DirectSave
+                                 ? ("Baixando diretamente para " + p.path)
+                                 : "Adicionado à fila de download local.";
+    pthread_cond_broadcast(&changed);
+    pthread_mutex_unlock(&mutex);
+    return p.id;
+}
+
+int PackageInstaller::enqueueDirectDownload(const Game& g, const std::string& destInput, bool forceDir,
+                                            std::string& outMessage) {
+    std::string targetDir, targetPath, err;
+    bool explicitFile = false;
+    if (!resolveDirectDownloadTarget(destInput, g.url, g.title, forceDir, targetDir, targetPath, explicitFile, err, true)) {
+        outMessage = err;
+        return 0;
+    }
+
+    pthread_mutex_lock(&mutex);
+    for (const auto& t : tasks) {
+        if (t.mode == InstallMode::DirectSave && t.path == targetPath &&
+            (t.state == InstallState::Queued || t.state == InstallState::Downloading)) {
+            outMessage = "Este arquivo já está sendo baixado para " + targetPath;
+            int existingId = t.id;
+            pthread_mutex_unlock(&mutex);
+            return existingId;
+        }
+    }
+    if (tasks.size() >= 128) {
+        outMessage = "Lista de tarefas cheia. Remova itens concluídos com OPTIONS.";
+        pthread_mutex_unlock(&mutex);
+        return 0;
+    }
+
+    InstallPackage p;
+    p.id = nextId++;
+    p.itemId = g.id;
+    p.mode = InstallMode::DirectSave;
+    p.state = InstallState::Queued;
+    p.name = g.title;
+    p.url = g.url;
+    p.iconUrl = g.image;
+    p.contentId = g.contentId;
+    p.titleId = g.contentId.size() == 36 ? g.contentId.substr(7, 9) : "";
+    p.bytes = g.sizeBytes;
+    p.contentType = g.contentType ? g.contentType : 0x1a;
+    p.contentFlags = g.contentFlags;
+    p.patch = NullBGFT::isPatch(p.contentType, p.contentFlags);
+    p.splitUrls = g.splitUrls;
+    p.path = targetPath;
+    p.note = "Na fila -> " + targetPath;
+    tasks.insert(tasks.begin(), p);
+    saveLocked();
+    ++version;
+    outMessage = "Baixando diretamente para " + targetPath;
     pthread_cond_broadcast(&changed);
     pthread_mutex_unlock(&mutex);
     return p.id;
@@ -434,8 +531,10 @@ void PackageInstaller::loop() {
         for (auto& t : tasks) {
             if (t.state == InstallState::Queued) {
                 nextJobId = t.id;
-                t.state = t.mode == InstallMode::LocalStorageEx ? InstallState::Downloading : InstallState::Registering;
+                bool fileDownload = (t.mode == InstallMode::LocalStorageEx || t.mode == InstallMode::DirectSave);
+                t.state = fileDownload ? InstallState::Downloading : InstallState::Registering;
                 t.note = t.mode == InstallMode::LocalStorageEx ? "Baixando pacote PKG..."
+                       : t.mode == InstallMode::DirectSave     ? ("Baixando em " + t.path + "...")
                        : t.mode == InstallMode::BinLoaderElf   ? "Gerando ELF para BinLoader (127.0.0.1:9090)..."
                                                                : "Preparando tarefa em Notificações...";
                 job = t;
@@ -450,12 +549,14 @@ void PackageInstaller::loop() {
             std::string error;
             bool ok = true;
 
+            std::string initialUrl = job.url;
             std::string manifestUrl;
             std::vector<PkgPiece> pieces;
             uint64_t manifestSizeTotal = 0;
             // Se o link for um manifesto .json, resolve para o link direto do .pkg (até 2 saltos)
             for (int hop = 0; hop < 2 && ok && endsWithJson(job.url); ++hop) {
                 if (!backend.fetchUrl) {
+                    if (job.mode == InstallMode::DirectSave) break;
                     error = "Busca de manifesto JSON indisponível";
                     ok = false;
                     break;
@@ -471,6 +572,12 @@ void PackageInstaller::loop() {
                 uint64_t manifestSize = 0;
                 std::vector<PkgPiece> hopPieces;
                 if (!extractPkgManifestFromJson(jsonBody, serverBaseFromCatalogUrl(job.url), resolvedUrl, hopPieces, manifestCid, manifestSize, error)) {
+                    if (job.mode == InstallMode::DirectSave) {
+                        // Permite baixar arquivos .json comuns diretamente sem exigir formato de manifesto PKG
+                        error.clear();
+                        pieces.clear();
+                        break;
+                    }
                     ok = false;
                     break;
                 }
@@ -491,6 +598,28 @@ void PackageInstaller::loop() {
                     pieces.push_back(std::move(pc));
                 }
                 job.url = pieces[0].url;
+            }
+            if (ok && job.mode == InstallMode::DirectSave && endsWithJson(initialUrl) && !manifestUrl.empty()) {
+                size_t slash = job.path.rfind('/');
+                std::string dir = (slash == std::string::npos || slash == 0) ? "/" : job.path.substr(0, slash);
+                std::string base = (slash == std::string::npos) ? job.path : job.path.substr(slash + 1);
+                if (base == extractDownloadFilename(initialUrl, job.name)) {
+                    std::string nextName = pieces.size() > 1
+                        ? sanitizeDownloadFilename((job.name.empty() ? "pacote" : job.name) + ".pkg", "pacote.pkg")
+                        : extractDownloadFilename(job.url, job.name);
+                    std::string updatedPath = (dir == "/" ? "" : dir) + "/" + nextName;
+                    if (updatedPath != job.path) {
+                        job.path = updatedPath;
+                        pthread_mutex_lock(&mutex);
+                        if (auto* t = findLocked(nextJobId)) {
+                            t->path = job.path;
+                            t->note = "Baixando em " + t->path + "...";
+                            saveLocked();
+                            ++version;
+                        }
+                        pthread_mutex_unlock(&mutex);
+                    }
+                }
             }
 
             if (ok && (job.mode == InstallMode::RemoteBgft || job.mode == InstallMode::BinLoaderElf)) {
@@ -592,9 +721,15 @@ void PackageInstaller::loop() {
                     }
                 }
             } else if (ok) {
-                std::string dir = root + "/downloads/" + std::to_string(job.id);
-                mkdir(dir.c_str(), 0777);
-                if (pieces.size() > 1) {
+                if (job.mode == InstallMode::DirectSave) {
+                    auto slash = job.path.rfind('/');
+                    std::string dir = (slash == std::string::npos || slash == 0) ? "/" : job.path.substr(0, slash);
+                    if (!ensureDirTree(dir, error)) ok = false;
+                } else {
+                    std::string dir = root + "/downloads/" + std::to_string(job.id);
+                    mkdir(dir.c_str(), 0777);
+                }
+                if (ok && pieces.size() > 1) {
                     uint64_t totalSz = job.bytes > 0 ? job.bytes : manifestSizeTotal;
                     if (totalSz == 0) {
                         for (const auto& pc : pieces) totalSz += pc.size;
@@ -618,24 +753,25 @@ void PackageInstaller::loop() {
                                                             onDownloadProgress, onDownloadStop, &ctx, error);
                         }
                         if (!pieceOk) {
-                            if (error.empty()) error = "Falha ao baixar parte " + std::to_string(i + 1) + " do PKG";
+                            if (error.empty()) error = "Falha ao baixar parte " + std::to_string(i + 1) + " do arquivo";
                             ok = false;
                         } else if (pieces[i].size > 0) {
                             offsetAccum += pieces[i].size;
                         } else {
-                            struct stat st;
-                            if (stat(job.path.c_str(), &st) == 0 && st.st_size >= 0) {
-                                offsetAccum = (uint64_t)st.st_size;
+                            int sfd = open(job.path.c_str(), O_RDONLY | O_NOFOLLOW);
+                            if (sfd >= 0) {
+                                struct stat st;
+                                if (portalDescriptorInfo(sfd, &st) == 0 && st.st_size >= 0) {
+                                    offsetAccum = (uint64_t)st.st_size;
+                                }
+                                close(sfd);
                             }
                         }
                     }
-                    if (ok) {
-                        ok = inspectPackage(job.path, job, error) &&
-                             backend.registerStorageTask &&
-                             backend.registerStorageTask(job, job.taskId, error) &&
-                             job.taskId >= 0;
+                    if (!ok && pieces.size() > 1 && job.mode == InstallMode::DirectSave) {
+                        unlink(job.path.c_str());
                     }
-                } else {
+                } else if (ok) {
                     DownloadCtx ctx;
                     ctx.self = this;
                     ctx.id = job.id;
@@ -643,6 +779,20 @@ void PackageInstaller::loop() {
                     if (!backend.downloadPkgFile ||
                         !backend.downloadPkgFile(job.url, job.path, job.bytes, onDownloadProgress, onDownloadStop, &ctx, error)) {
                         ok = false;
+                    }
+                }
+
+                if (ok) {
+                    if (job.mode == InstallMode::DirectSave) {
+                        int dfd = open(job.path.c_str(), O_RDONLY | O_NOFOLLOW);
+                        if (dfd >= 0) {
+                            struct stat st;
+                            if (portalDescriptorInfo(dfd, &st) == 0 && st.st_size >= 0) {
+                                job.doneBytes = (uint64_t)st.st_size;
+                                if (job.bytes == 0 || job.bytes < job.doneBytes) job.bytes = job.doneBytes;
+                            }
+                            close(dfd);
+                        }
                     } else {
                         ok = inspectPackage(job.path, job, error) &&
                              backend.registerStorageTask &&
@@ -666,6 +816,12 @@ void PackageInstaller::loop() {
                         t->state = InstallState::Complete;
                         t->percent = 100;
                         t->note = "ELF enviado para BinLoader (127.0.0.1:9090)";
+                    } else if (job.mode == InstallMode::DirectSave) {
+                        t->state = InstallState::Complete;
+                        t->percent = 100;
+                        if (job.doneBytes > 0) t->doneBytes = job.doneBytes;
+                        else if (t->bytes > 0) t->doneBytes = t->bytes;
+                        t->note = "Salvo em " + t->path;
                     } else {
                         t->state = InstallState::Registered;
                         t->note = "Registrado no PS4; iniciando...";
@@ -675,7 +831,7 @@ void PackageInstaller::loop() {
                 }
                 pthread_mutex_unlock(&mutex);
 
-                if (job.mode != InstallMode::BinLoaderElf) {
+                if (job.mode != InstallMode::BinLoaderElf && job.mode != InstallMode::DirectSave) {
                     ok = backend.startTask && backend.startTask(job.taskId, error);
                 }
             }
@@ -689,6 +845,19 @@ void PackageInstaller::loop() {
                         t->note = "ELF enviado para BinLoader (127.0.0.1:9090)";
                         std::string toast = "WILLGAME Store: " + t->name + " enviado via BinLoader (.ELF)";
                         setNoticeLocked(t->name + ": ELF enviado para BinLoader (127.0.0.1:9090)!");
+                        if (backend.notifySystem) {
+                            pthread_mutex_unlock(&mutex);
+                            backend.notifySystem(toast);
+                            pthread_mutex_lock(&mutex);
+                        }
+                    } else if (job.mode == InstallMode::DirectSave) {
+                        t->state = InstallState::Complete;
+                        t->percent = 100;
+                        if (job.doneBytes > 0) t->doneBytes = job.doneBytes;
+                        else if (t->bytes > 0) t->doneBytes = t->bytes;
+                        t->note = "Salvo em " + t->path;
+                        std::string toast = "WILLGAME Store: " + t->name + " salvo em " + t->path;
+                        setNoticeLocked(t->name + ": salvo em " + t->path + "!");
                         if (backend.notifySystem) {
                             pthread_mutex_unlock(&mutex);
                             backend.notifySystem(toast);

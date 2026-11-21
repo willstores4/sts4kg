@@ -442,6 +442,19 @@ struct UI {
             int totalChoices = (nLinks > 1) ? (nLinks + 1) : 1;
             if (detailLink < 0 || detailLink >= totalChoices) detailLink = 0;
 
+            auto prepareDetailBatch = [&](const Game& item) {
+                installBatch.clear();
+                if (nLinks > 1 && detailLink == nLinks) {
+                    for (int li = 0; li < nLinks; ++li) {
+                        installBatch.push_back(gameForLink(item, li));
+                    }
+                    installItem = installBatch[0];
+                } else {
+                    installItem = gameForLink(item, detailLink);
+                    installBatch.push_back(installItem);
+                }
+            };
+
             if (a == BACK) { detail = false; return; }
             if (a == FAVORITE) { favorite(); return; }
             if (nLinks > 1 && (a == UP || a == TAB_PREV)) {
@@ -461,16 +474,7 @@ struct UI {
                 return;
             }
             if ((a == CONFIRM || a == LOCAL_INSTALL || a == BINLOADER_INSTALL) && cur) {
-                installBatch.clear();
-                if (nLinks > 1 && detailLink == nLinks) {
-                    for (int li = 0; li < nLinks; ++li) {
-                        installBatch.push_back(gameForLink(*cur, li));
-                    }
-                    installItem = installBatch[0];
-                } else {
-                    installItem = gameForLink(*cur, detailLink);
-                    installBatch.push_back(installItem);
-                }
+                prepareDetailBatch(*cur);
                 if (a == CONFIRM) installBgRequest = true;
                 else if (a == LOCAL_INSTALL) installLocalRequest = true;
                 else installBinLoaderRequest = true;
@@ -686,9 +690,12 @@ struct UI {
                     if (active) c.rect(352, y, 5, 128, cyan);
 
                     c.text(t.name, 377, y + 34, 27, white, 1080);
-                    std::string modeBadge = t.mode == InstallMode::RemoteBgft ? "Notificações PS4" : "Download Local";
+                    std::string modeBadge = t.mode == InstallMode::RemoteBgft   ? "Notificações PS4"
+                                          : t.mode == InstallMode::BinLoaderElf ? "Payload ELF"
+                                          : t.mode == InstallMode::DirectSave   ? "Download Direto"
+                                                                                : "Download Local";
                     c.text(modeBadge + (t.taskId >= 0 ? "  #" + std::to_string(t.taskId) : ""), 1470, y + 30, 18, muted, 360);
-                    c.text(installStateName(t.state), 1470, y + 58, 22,
+                    c.text(installStateLabel(t), 1470, y + 58, 22,
                            t.state == InstallState::Error ? 0xffa5a5 : cyan, 360);
 
                     double fraction = t.percent >= 0 ? std::min(1.0, double(t.percent) / 100.0)
@@ -773,7 +780,10 @@ struct UI {
                 std::string hintHdr = hasScroll
                     ? ("LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo ou L2/R2 para rolar, X para instalar:")
                     : ("SELECIONE O LINK (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  Cima/Baixo e X para instalar:");
-                if (!isAll && shown.useBinloader) {
+                if (!isAll && shown.directDownload) {
+                    std::string dstShow = shown.directPath.empty() ? std::string("/data/pkg") : shown.directPath;
+                    hintHdr = "LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  X baixa direto para " + dstShow + ":";
+                } else if (!isAll && shown.useBinloader) {
                     hintHdr = "LINKS (" + std::to_string(selLink + 1) + "/" + std::to_string(totalChoices) + ")  —  X envia Payload ELF (127.0.0.1:9090):";
                 }
                 c.text(hintHdr, 810, 540, 18, cyan, 1042);
@@ -787,7 +797,8 @@ struct UI {
                     std::string bName = idx == nLinks
                         ? "Instalar TODOS (" + std::to_string(nLinks) + " links na fila)"
                         : (g.links[idx].label.empty() ? "Link " + std::to_string(idx + 1) : g.links[idx].label);
-                    if (idx < nLinks && g.links[idx].useBinloader) bName += "  [ELF]";
+                    if (idx < nLinks && g.links[idx].directDownload) bName += "  [DIRETO]";
+                    else if (idx < nLinks && g.links[idx].useBinloader) bName += "  [ELF]";
                     std::string bText = (activeBtn ? "X  " : "   ") + bName;
                     c.text(bText, 830, by + 33, 24, activeBtn ? bg : white, hasScroll ? 812 : 836);
                     if (idx < nLinks && !g.links[idx].size.empty()) {
@@ -816,12 +827,19 @@ struct UI {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
                 c.rect(810, 675, 1042, 66, cyan);
-                c.text(shown.useBinloader
-                           ? "X  Enviar via Payload ELF (BinLoader 127.0.0.1:9090)"
-                           : "X  Instalar em Background (Notificações PS4)",
-                       836, 720, 30, bg, 990);
-                c.text("L3  Baixar no App + Instalar (Local)     R3  Ver Notificações", 810, 780, 24, white, 1042);
-                c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                std::string mainActionLabel = shown.directDownload
+                    ? ("X  Baixar Arquivo Direto (" + (shown.directPath.empty() ? std::string("/data/pkg") : shown.directPath) + ")")
+                    : shown.useBinloader
+                          ? "X  Enviar via Payload ELF (BinLoader 127.0.0.1:9090)"
+                          : "X  Instalar em Background (Notificações PS4)";
+                c.text(mainActionLabel, 836, 720, 28, bg, 990);
+                c.text(shown.directDownload
+                           ? "R3  Ver Notificações     CÍRCULO  Voltar ao catálogo"
+                           : "L3  Baixar no App + Instalar (Local)     R3  Ver Notificações",
+                       810, 780, 24, white, 1042);
+                if (!shown.directDownload) {
+                    c.text("CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
+                }
                 c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }

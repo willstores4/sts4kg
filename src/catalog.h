@@ -25,6 +25,8 @@ struct GameLink {
     uint32_t contentType = 0x1a;
     uint32_t contentFlags = 0;
     bool useBinloader = false;
+    bool directDownload = false;
+    std::string directPath;
 };
 
 struct Game {
@@ -41,6 +43,8 @@ struct Game {
     uint32_t contentType = 0x1a;
     uint32_t contentFlags = 0;
     bool useBinloader = false;
+    bool directDownload = false;
+    std::string directPath;
     std::string url;   // PKG URL
     std::string image; // Cover URL
     long long updatedAt = 0;
@@ -69,6 +73,8 @@ inline Game gameForLink(const Game& g, int idx) {
     Game out = g;
     out.url = lnk.url;
     out.useBinloader = lnk.useBinloader;
+    out.directDownload = lnk.directDownload;
+    out.directPath = lnk.directPath;
     if (g.links.size() > 1 && !lnk.label.empty()) {
         out.title = g.title + " [" + lnk.label + "]";
     }
@@ -650,6 +656,8 @@ inline std::vector<GameLink> parseLinksJsonArray(const MiniJson::Value& arr, con
         if (auto* v = lv.get("content_type")) lk.contentType = (uint32_t)v->asUInt(0x1a);
         if (auto* v = lv.get("content_flags")) lk.contentFlags = (uint32_t)v->asUInt(0);
         if (auto* v = lv.get("use_binloader")) lk.useBinloader = v->asBool();
+        if (auto* v = lv.get("direct_download")) lk.directDownload = v->asBool();
+        lk.directPath = firstJsonString(lv, {"direct_path", "directPath"});
         out.push_back(std::move(lk));
     }
     return out;
@@ -681,7 +689,9 @@ inline std::string serializeLinksJson(const std::vector<GameLink>& links) {
                "\"content_id\":\"" + jsonEscape(l.contentId) + "\","
                "\"content_type\":" + std::to_string(l.contentType) + ","
                "\"content_flags\":" + std::to_string(l.contentFlags) + ","
-               "\"use_binloader\":" + std::string(l.useBinloader ? "true" : "false") + "}";
+               "\"use_binloader\":" + std::string(l.useBinloader ? "true" : "false") + ","
+               "\"direct_download\":" + std::string(l.directDownload ? "true" : "false") + ","
+               "\"direct_path\":\"" + jsonEscape(l.directPath) + "\"}";
     }
     out += "]";
     return out;
@@ -770,6 +780,8 @@ inline bool parseCatalogJson(const std::string& jsonText, const std::string& ser
         if (auto* v = it.get("content_type")) g.contentType = (uint32_t)v->asUInt(0x1a);
         if (auto* v = it.get("content_flags")) g.contentFlags = (uint32_t)v->asUInt(0);
         if (auto* v = it.get("use_binloader")) g.useBinloader = v->asBool();
+        if (auto* v = it.get("direct_download")) g.directDownload = v->asBool();
+        g.directPath = firstJsonString(it, {"direct_path", "directPath"});
         g.url = resolveServerUrl(serverBase, firstJsonString(it, {"pkg_url", "pkgUrl", "url", "pkg", "download_url"}));
         g.image = resolveServerUrl(serverBase, firstJsonString(it, {"cover_url", "coverUrl", "cover", "image", "image_url", "icon"}));
         if (auto* v = it.get("updated_at")) g.updatedAt = v->asInt();
@@ -790,6 +802,8 @@ inline bool parseCatalogJson(const std::string& jsonText, const std::string& ser
                 primary.contentType = g.contentType;
                 primary.contentFlags = g.contentFlags;
                 primary.useBinloader = g.useBinloader;
+                primary.directDownload = g.directDownload;
+                primary.directPath = g.directPath;
                 g.links.push_back(std::move(primary));
                 for (size_t ei = 0; ei < extraArr->arrVal.size(); ++ei) {
                     const auto& ev = extraArr->arrVal[ei];
@@ -804,6 +818,8 @@ inline bool parseCatalogJson(const std::string& jsonText, const std::string& ser
                         if (auto* v = ev.get("content_type")) lk.contentType = (uint32_t)v->asUInt(0x1a);
                         if (auto* v = ev.get("content_flags")) lk.contentFlags = (uint32_t)v->asUInt(0);
                         if (auto* v = ev.get("use_binloader")) lk.useBinloader = v->asBool();
+                        if (auto* v = ev.get("direct_download")) lk.directDownload = v->asBool();
+                        lk.directPath = firstJsonString(ev, {"direct_path", "directPath"});
                     } else {
                         lk.url = resolveServerUrl(serverBase, ev.asString());
                     }
@@ -816,6 +832,8 @@ inline bool parseCatalogJson(const std::string& jsonText, const std::string& ser
         if (g.url.empty() && !g.links.empty()) {
             g.url = g.links[0].url;
             g.useBinloader = g.links[0].useBinloader;
+            g.directDownload = g.links[0].directDownload;
+            g.directPath = g.links[0].directPath;
         }
 
         if (auto* sv = it.get("split_urls")) {
@@ -895,6 +913,8 @@ inline std::string serialize(const std::vector<Game>& v) {
         s += "\t" + cleanField(serializeLinksJson(g.links));
         s += "\t" + cleanField(serializeStringArrayJson(g.splitUrls));
         s += "\t" + std::string(g.useBinloader ? "1" : "0");
+        s += "\t" + std::string(g.directDownload ? "1" : "0");
+        s += "\t" + cleanField(g.directPath);
         s += "\n";
     }
     return s;
@@ -944,6 +964,12 @@ inline std::vector<Game> loadCatalog(const std::string& s) {
         }
         if (f.size() >= 18 && !f[17].empty()) {
             g.useBinloader = (f[17] == "1");
+        }
+        if (f.size() >= 19 && !f[18].empty()) {
+            g.directDownload = (f[18] == "1");
+        }
+        if (f.size() >= 20 && !f[19].empty()) {
+            g.directPath = f[19];
         }
         if (g.id > 0 && !g.title.empty() && isHttpUrl(g.url)) {
             v.push_back(std::move(g));

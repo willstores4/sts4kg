@@ -336,7 +336,7 @@ int main() {
             startSync(ui.serverUrl);
         }
 
-        // Ações de Instalação (Notificações BGFT, Local StorageEx ou BinLoader ELF 9090)
+        // Ações de Instalação (Notificações BGFT, Local StorageEx, BinLoader ELF ou Download Direto configurado no painel)
         if (ui.installBgRequest || ui.installLocalRequest || ui.installBinLoaderRequest) {
             bool reqLocal = ui.installLocalRequest;
             bool reqBin = ui.installBinLoaderRequest;
@@ -349,10 +349,15 @@ int main() {
                 std::string msg;
                 int queuedCount = 0;
                 for (const auto& item : batch) {
-                    InstallMode itemMode = reqLocal ? InstallMode::LocalStorageEx
-                                         : (reqBin || item.useBinloader) ? InstallMode::BinLoaderElf
-                                         : InstallMode::RemoteBgft;
-                    if (installer.enqueueHomebrew(item, itemMode, msg) > 0) ++queuedCount;
+                    if (!reqLocal && !reqBin && item.directDownload) {
+                        std::string dest = item.directPath.empty() ? std::string("/data/pkg") : item.directPath;
+                        if (installer.enqueueDirectDownload(item, dest, false, msg) > 0) ++queuedCount;
+                    } else {
+                        InstallMode itemMode = reqLocal ? InstallMode::LocalStorageEx
+                                             : (reqBin || item.useBinloader) ? InstallMode::BinLoaderElf
+                                             : InstallMode::RemoteBgft;
+                        if (installer.enqueueHomebrew(item, itemMode, msg) > 0) ++queuedCount;
+                    }
                 }
                 ui.notice = batch.size() > 1
                     ? std::to_string(queuedCount) + " links adicionados à fila!"
