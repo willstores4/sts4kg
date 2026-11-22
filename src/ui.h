@@ -1754,7 +1754,7 @@ struct UI {
         if (!notice.empty()) {
             c.rect(320, 922, 1550, 60, 0x143359);
             c.rect(320, 922, 5, 60, cyan);
-            c.text(notice, 345, 962, 24, white, 1500);
+            c.text(notice, 345, 962, 24, 0x34d399, 1500);
         }
         dirty = false;
     }
