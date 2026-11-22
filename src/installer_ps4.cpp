@@ -523,7 +523,7 @@ static bool fetchPkgHeader(const std::string& url, std::string& outBytes, std::s
 
 static bool fetchManifestUrl(const std::string& url, std::string& out, size_t cap, std::string& error) {
     if (portalNetworkFetch(url, out, cap)) return true;
-    error = "Não foi possível baixar o JSON de " + urlHostLabel(url);
+    error = "Não foi possível baixar o manifesto JSON";
     return false;
 }
 

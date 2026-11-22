@@ -195,9 +195,9 @@ static bool performHttp(bool isPost, const std::string& initial, const std::stri
                     portalNetworkTrace("request failure host=%s send=0x%08X sslQuery=0x%08X ssl=0x%08X verify=0x%08X errnoQuery=0x%08X errno=%d",
                                        networkHost(url).c_str(), (unsigned)sendResult, (unsigned)sslQuery, (unsigned)sslCode, verify, (unsigned)errnoQuery, nativeErrno);
                     if (((uint32_t)sendResult & 0xffff0000u) == 0x80950000u) {
-                        errorOut = "Falha na conexão segura (HTTPS) com " + networkHost(url) + " — ative o Proxy no painel";
+                        errorOut = "Falha na conexão segura (HTTPS) — ative o Proxy no painel";
                     } else {
-                        errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+                        errorOut = "Não foi possível conectar ao servidor";
                     }
                 } else {
                     failure = "get_status";
@@ -354,7 +354,7 @@ static bool performHttp(bool isPost, const std::string& initial, const std::stri
             if (failure == "redirect_without_location") {
                 errorOut = "Servidor enviou redirecionamento inválido";
             } else {
-                errorOut = "Não foi possível conectar ao servidor (" + networkHost(url) + ")";
+                errorOut = "Não foi possível conectar ao servidor";
             }
         }
         return false;

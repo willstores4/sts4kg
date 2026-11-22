@@ -1139,25 +1139,24 @@ struct UI {
             c.lines("Este console gera um código único e fica vinculado ao usuário aprovado no painel.",
                     110, 544, 19, muted, 520, 2);
 
-            c.rounded(110, 635, 520, 184, 10, 0x0b182a);
-            c.rect(110, 635, 5, 184, cyan);
-            c.text("SERVIDOR CONECTADO", 136, 672, 16, muted, 470);
-            c.text(serverUrl, 136, 712, 22, white, 470);
+            c.rounded(110, 635, 520, 168, 10, 0x0b182a);
+            c.rect(110, 635, 5, 168, cyan);
+            c.text("STATUS DA CONEXÃO", 136, 672, 16, muted, 470);
             if (syncing) {
-                c.spinner(148, 750, 9, 2, spinnerAngle(), 0x163154, 0x5cb8ff);
-                c.text("Verificando servidor...", 170, 757, 17, cyan, 430);
+                c.spinner(148, 710, 9, 2, spinnerAngle(), 0x163154, 0x5cb8ff);
+                c.text("Verificando servidor...", 170, 717, 19, cyan, 430);
             } else {
-                c.text(status, 136, 757, 17, muted, 470);
+                c.text(status, 136, 717, 19, white, 470);
             }
             if (!deviceId.empty()) {
-                c.text("ID do Console: " + deviceId, 136, 794, 16, cyan, 470);
+                c.text("ID do Console: " + deviceId, 136, 766, 17, cyan, 470);
             }
 
             // Card principal de Autorização por Código
             c.rounded(780, 155, 1020, 745, 14, 0x0b1526);
             c.rect(780, 155, 7, 745, cyan);
             c.text("Autorizar Console PS4", 845, 228, 44, white, 880);
-            c.text("Abra o Painel Web em " + serverUrl + " (aba Usuários) e aprove este código:",
+            c.text("Abra o Painel Web (aba Usuários) e aprove este código:",
                    845, 272, 20, muted, 890);
 
             // Caixa do Código de Ativação
@@ -1217,7 +1216,7 @@ struct UI {
             c.rounded(1370, 646, 360, 68, 8, srvBg);
             c.text("L3  Opções / Sync", 1400, 690, 23, srvFg, 310);
 
-            c.text("1. Abra " + serverUrl + "   •   2. Usuários > Autorizar PS4   •   3. O app libera sozinho",
+            c.text("1. Abra o Painel Web   •   2. Usuários > Autorizar PS4   •   3. O app libera sozinho",
                    845, 770, 19, cyan, 900);
             c.text("D-pad  Mover     X  Novo código     TRIÂNGULO  Novo código     OPTIONS  Verificar agora     L3  Opções",
                    845, 824, 18, muted, 900);
@@ -1271,22 +1270,20 @@ struct UI {
             c.text(countStr, 240, y - 1, 17, active ? cyan : muted, 52);
         }
 
-        // Info do Servidor & Conta na barra lateral
+        // Info de Conta & Controles na barra lateral (sem exibir endereço do servidor)
         if (!loggedUsername.empty()) {
-            c.rect(24, 738, 266, 1, rule);
+            c.rect(24, 744, 266, 1, rule);
             std::string who = loggedDisplayName.empty() ? loggedUsername : loggedDisplayName;
-            c.text("CONTA: " + who, 32, 770, 17, 0x34d399, 265);
-            c.text("L1 / R1  Categoria", 32, 804, 18, muted, 260);
-            c.text("L3  Servidor / Conta:", 32, 840, 18, cyan, 260);
-            c.text(urlHostLabel(serverUrl), 32, 870, 21, white, 265);
-            c.text("OPTIONS  Sincronizar", 32, 910, 18, muted, 260);
+            c.text("CONTA: " + who, 32, 778, 18, 0x34d399, 265);
+            c.text("L1 / R1  Categoria", 32, 820, 18, muted, 260);
+            c.text("L3  Conta / Opções", 32, 860, 18, cyan, 260);
+            c.text("OPTIONS  Sincronizar", 32, 900, 18, muted, 260);
             c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 956, 19, muted, 265);
         } else {
-            c.rect(24, 750, 266, 1, rule);
-            c.text("L1 / R1  Categoria", 32, 790, 18, muted, 260);
-            c.text("L3  Servidor:", 32, 830, 18, cyan, 260);
-            c.text(urlHostLabel(serverUrl), 32, 860, 21, white, 265);
-            c.text("OPTIONS  Sincronizar", 32, 902, 18, muted, 260);
+            c.rect(24, 756, 266, 1, rule);
+            c.text("L1 / R1  Categoria", 32, 800, 18, muted, 260);
+            c.text("L3  Opções da Loja", 32, 845, 18, cyan, 260);
+            c.text("OPTIONS  Sincronizar", 32, 890, 18, muted, 260);
             c.text(std::to_string(games.size()) + " itens  •  " + std::to_string(categories.size()) + " cat.", 32, 955, 19, muted, 265);
         }
 
@@ -1313,7 +1310,7 @@ struct UI {
                 if (visible.empty()) {
                     c.text(games.empty() ? "Nenhum homebrew sincronizado" : "Nenhum item encontrado", 352, 280, 40, white);
                     std::string hint = games.empty()
-                        ? "Inicie o Painel Web e pressione OPTIONS para sincronizar (" + serverUrl + ") ou L3 para trocar o IP."
+                        ? "Inicie o Painel Web e pressione OPTIONS para sincronizar o catálogo."
                         : (tab == 1 ? "Pressione QUADRADO em um homebrew para salvar nos favoritos."
                                     : "Pressione TRIÂNGULO para buscar ou CÍRCULO para limpar filtros.");
                     c.lines(hint, 352, 338, 24, muted, 1400, 3);
@@ -1570,7 +1567,6 @@ struct UI {
                     c.text("L3  Baixar no App + Instalar (Local)     R3  Notificações     OPTIONS  Atualizar     CÍRCULO  Voltar",
                            810, 850, 20, white, 1042);
                 }
-                c.lines(isAll ? g.url : shown.url, 810, 892, 19, muted, 1042, 2);
             } else {
                 c.text(favorites.count(g.id) ? "Salvo nos favoritos (QUADRADO remove)" : "QUADRADO  Salvar nos favoritos",
                        810, 645, 22, cyan, 1020);
@@ -1616,24 +1612,23 @@ struct UI {
                         c.text("OPTIONS  Atualizar status     CÍRCULO  Voltar ao catálogo", 810, 822, 22, muted);
                     }
                 }
-                c.lines(shown.url, 810, 868, 20, muted, 1042, 2);
             }
         }
         } // fim da tela principal (!loginScreen)
 
-        // Modal Servidor Fixo / Conta
+        // Modal Opções da Loja / Conta (sem exibir endereço do servidor)
         if (serverPicker) {
             int nOpts = loggedUsername.empty() ? 2 : 3;
             int modalH = loggedUsername.empty() ? 480 : 560;
             c.rect(365, 250, 1230, modalH, 0x091c34);
             c.rect(365, 250, 7, modalH, cyan);
-            c.text("Servidor & Conta", 420, 315, 40, white);
-            c.text("Servidor fixo: " + serverUrl, 420, 366, 24, cyan, 1120);
+            c.text("Opções & Conta", 420, 315, 40, white);
             if (!loggedUsername.empty()) {
                 c.text("Usuário logado: " + (loggedDisplayName.empty() ? loggedUsername : loggedDisplayName + " (" + loggedUsername + ")"),
-                       420, 402, 20, 0x34d399, 1120);
+                       420, 372, 22, 0x34d399, 1120);
+                c.text("Sincroniza o catálogo em memória diretamente da loja online.", 420, 408, 20, muted, 1120);
             } else {
-                c.text("Sincroniza o catálogo em memória diretamente deste servidor fixo.", 420, 402, 22, muted, 1120);
+                c.text("Sincroniza o catálogo em memória diretamente da loja online.", 420, 376, 22, muted, 1120);
             }
             std::string logoutOpt = "Desvincular / Sair da conta (" + loggedUsername + ")";
             const char* opts[3] = {

@@ -67,7 +67,7 @@ static void* syncThread(void*) {
     std::string token = syncToken;
     pthread_mutex_unlock(&syncLock);
 
-    setSyncStatus("Sincronizando com " + urlHostLabel(server) + "...");
+    setSyncStatus("Sincronizando catálogo...");
     std::string body;
     std::string baseUrl = serverBaseFromCatalogUrl(server);
 
@@ -84,7 +84,7 @@ static void* syncThread(void*) {
                     syncAuthRequired = true;
                     syncClearSession = !token.empty();
                     syncAuthMessage = token.empty() ? "" : "Sessão expirada ou bloqueada. Entre novamente.";
-                    syncStatusMsg = "Login necessário (" + urlHostLabel(server) + ")";
+                    syncStatusMsg = "Autorização necessária";
                     syncWorking = false;
                     pthread_mutex_unlock(&syncLock);
                     return nullptr;
@@ -111,8 +111,8 @@ static void* syncThread(void*) {
         pthread_mutex_lock(&syncLock);
         syncAuthRequired = true;
         syncClearSession = !token.empty();
-        syncAuthMessage = !apiErr.empty() ? apiErr : "Faça login para acessar a loja.";
-        syncStatusMsg = "Login necessário (" + urlHostLabel(server) + ")";
+        syncAuthMessage = !apiErr.empty() ? apiErr : "Autorize este console para acessar a loja.";
+        syncStatusMsg = "Autorização necessária";
         syncWorking = false;
         pthread_mutex_unlock(&syncLock);
         return nullptr;
@@ -120,7 +120,7 @@ static void* syncThread(void*) {
     if (!fetched) {
         pthread_mutex_lock(&syncLock);
         syncOfflineRequired = true;
-        syncStatusMsg = "Servidor offline (" + urlHostLabel(server) + ") | Conecte a internet";
+        syncStatusMsg = "Servidor offline | Conecte a internet";
         syncWorking = false;
         pthread_mutex_unlock(&syncLock);
         return nullptr;
@@ -183,7 +183,7 @@ static void* syncThread(void*) {
 
     pthread_mutex_lock(&syncLock);
     if (fetchedCovers > 0) clearCoversOnPublish = true;
-    syncStatusMsg = "Sincronizado com " + urlHostLabel(server) + " (" + std::to_string(parsed.items.size()) + " itens)";
+    syncStatusMsg = "Sincronizado (" + std::to_string(parsed.items.size()) + " itens)";
     syncWorking = false;
     pthread_mutex_unlock(&syncLock);
     return nullptr;
@@ -352,7 +352,7 @@ static void* connCheckThread(void*) {
     bool authValid = true;
     std::string errMsg;
     if (!reachable) {
-        errMsg = !authErr.empty() ? authErr : ("Sem conexão com o servidor (" + urlHostLabel(server) + ").");
+        errMsg = !authErr.empty() ? authErr : "Sem conexão com o servidor.";
     } else if (fetched) {
         AppAuthInfo ai;
         if (parseAppAuthInfoJson(authBody, ai) && ai.loginRequired && !ai.authenticated) {
@@ -816,7 +816,7 @@ int main() {
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
-            ui.activationError = "Sem conexão com a internet / servidor offline (" + urlHostLabel(ui.serverUrl) + ").";
+            ui.activationError = "Sem conexão com a internet / servidor offline.";
             ui.dirty = true;
         }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
@@ -923,7 +923,7 @@ int main() {
                     ui.activationExpiresIn = 0;
                     ui.activationError = !connCheckErrMsg.empty()
                         ? connCheckErrMsg
-                        : ("Sem conexão com a internet / servidor offline (" + urlHostLabel(ui.serverUrl) + ").");
+                        : "Sem conexão com a internet / servidor offline.";
                     ui.dirty = true;
                 }
             } else if (!connCheckAuthValid) {
