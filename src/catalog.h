@@ -259,6 +259,39 @@ inline bool isHttpUrl(const std::string& url) {
     return !host.empty() && host[0] != ':' && host != "." && host != ".." && host.find('@') == std::string::npos;
 }
 
+inline std::string stripTokenQueryParam(const std::string& url) {
+    size_t q = url.find('?');
+    if (q == std::string::npos) return url;
+    std::string base = url.substr(0, q);
+    std::string qs = url.substr(q + 1);
+    std::string kept;
+    size_t pos = 0;
+    while (pos <= qs.size()) {
+        size_t amp = qs.find('&', pos);
+        std::string part = (amp == std::string::npos) ? qs.substr(pos) : qs.substr(pos, amp - pos);
+        if (part.compare(0, 6, "token=") != 0 && !part.empty()) {
+            if (!kept.empty()) kept += "&";
+            kept += part;
+        }
+        if (amp == std::string::npos) break;
+        pos = amp + 1;
+    }
+    return kept.empty() ? base : (base + "?" + kept);
+}
+
+inline std::string coverCacheFilename(const Game& g) {
+    if (g.id <= 0 || !isHttpUrl(g.image)) return "";
+    std::string key = stripTokenQueryParam(g.image) + "|" + std::to_string(g.updatedAt);
+    uint64_t h = 14695981039346656037ULL;
+    for (unsigned char c : key) {
+        h ^= c;
+        h *= 1099511628211ULL;
+    }
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)h);
+    return std::to_string(g.id) + "_" + std::string(hex) + ".jpg";
+}
+
 inline std::string normalizeServerUrl(std::string raw) {
     raw = trimStr(raw);
     if (raw.empty()) return "";

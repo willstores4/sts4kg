@@ -85,6 +85,16 @@ int main() {
     assert(cat.items[0].image == "http://192.168.1.2:8765/covers/10.jpg");
     assert(cat.items[0].description == "Ferramenta é open-source");
 
+    // Testar cache de capa por hash no nome (<id>_<hash>.jpg) sem arquivo .stamp
+    Game cTok = cat.items[0];
+    std::string fnBase = coverCacheFilename(cTok);
+    assert(fnBase.compare(0, 3, "10_") == 0 && fnBase.size() == 3 + 16 + 4);
+    cTok.image += "?token=abc123";
+    assert(coverCacheFilename(cTok) == fnBase); // mesmo token alterado não invalida cache
+    cTok.image = "http://192.168.1.2:8765/covers/10_novo.jpg?token=abc123";
+    assert(coverCacheFilename(cTok) != fnBase); // nova capa gera outro nome .jpg
+    assert(coverCacheFilename(cat.items[1]).empty());
+
     auto round = loadCatalog(serialize(cat.items));
     assert(round.size() == 2 && round[0].title == "Apollo Save Tool" && round[1].category == "Emuladores");
 

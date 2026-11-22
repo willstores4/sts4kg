@@ -628,7 +628,8 @@ struct UI {
         auto it = covers.find(g.id);
         if (it != covers.end()) return it->second;
         if (covers.size() >= 24) covers.clear();
-        auto b = loadBitmap(data + "/covers/" + std::to_string(g.id) + ".jpg");
+        std::string fn = coverCacheFilename(g);
+        Bitmap b = fn.empty() ? Bitmap() : loadBitmap(data + "/covers/" + fn);
         return covers.emplace(g.id, std::move(b)).first->second;
     }
 

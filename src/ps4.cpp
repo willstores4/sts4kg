@@ -41,21 +41,25 @@ static void setSyncStatus(const std::string& s) {
     pthread_mutex_unlock(&syncLock);
 }
 
-static void cleanStaleCovers(const std::string& coversDir, const std::vector<Game>& items) {
-    std::set<int> validIds;
-    for (const auto& g : items) validIds.insert(g.id);
+static bool cleanStaleCovers(const std::string& coversDir, const std::vector<Game>& items) {
+    std::set<std::string> validNames;
+    for (const auto& g : items) {
+        std::string fn = coverCacheFilename(g);
+        if (!fn.empty()) validNames.insert(fn);
+    }
 
+    bool removed = false;
     DIR* d = opendir(coversDir.c_str());
-    if (!d) return;
+    if (!d) return false;
     while (dirent* e = readdir(d)) {
         std::string name = e->d_name;
         if (name == "." || name == "..") continue;
-        int id = atoi(name.c_str());
-        if (id > 0 && !validIds.count(id)) {
-            unlink((coversDir + "/" + name).c_str());
+        if (!validNames.count(name)) {
+            if (unlink((coversDir + "/" + name).c_str()) == 0) removed = true;
         }
     }
     closedir(d);
+    return removed;
 }
 
 static void* syncThread(void*) {
@@ -135,7 +139,7 @@ static void* syncThread(void*) {
 
     std::string coversDir = DATA + "/covers";
     ensureDirectoryTree(coversDir);
-    cleanStaleCovers(coversDir, parsed.items);
+    bool changedCovers = cleanStaleCovers(coversDir, parsed.items);
 
     pthread_mutex_lock(&syncLock);
     syncedCatalog = parsed;
@@ -145,19 +149,13 @@ static void* syncThread(void*) {
     pthread_mutex_unlock(&syncLock);
 
     int fetchedCovers = 0;
-    bool changedCovers = false;
     for (const auto& g : parsed.items) {
-        std::string imgPath = coversDir + "/" + std::to_string(g.id) + ".jpg";
-        std::string stampPath = coversDir + "/" + std::to_string(g.id) + ".stamp";
-        if (!isHttpUrl(g.image)) {
-            if (unlink(imgPath.c_str()) == 0) changedCovers = true;
-            unlink(stampPath.c_str());
-            continue;
-        }
-        std::string expectedStamp = g.image + "|" + std::to_string(g.updatedAt);
+        std::string fn = coverCacheFilename(g);
+        if (fn.empty()) continue;
+        std::string imgPath = coversDir + "/" + fn;
 
         struct stat st;
-        if (stat(imgPath.c_str(), &st) == 0 && st.st_size > 0 && readFile(stampPath) == expectedStamp) {
+        if (stat(imgPath.c_str(), &st) == 0 && st.st_size > 0) {
             continue;
         }
 
@@ -167,7 +165,6 @@ static void* syncThread(void*) {
             if (stbi_info_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &c) &&
                 w > 0 && h > 0 && w <= 4096 && h <= 4096) {
                 if (writeFile(imgPath, bytes)) {
-                    writeFile(stampPath, expectedStamp);
                     ++fetchedCovers;
                     changedCovers = true;
                     if (fetchedCovers % 4 == 0) {
