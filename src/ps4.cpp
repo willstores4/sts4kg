@@ -27,9 +27,13 @@ static bool clearCoversOnPublish = false;
 static bool syncAuthRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
 static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
 
-static bool loginWorking = false, loginDone = false, loginOk = false;
-static std::string loginReqServer, loginReqUser, loginReqPass, loginResultErr;
-static AppSession loginResultSession;
+static bool codeReqWorking = false, codeReqDone = false, codeReqOk = false;
+static std::string codeReqServer, codeReqResultErr;
+static DeviceCodeResponse codeReqResult;
+
+static bool codePollWorking = false, codePollDone = false;
+static std::string codePollServer, codePollCode;
+static DeviceCodePollResult codePollResult;
 
 static void setSyncStatus(const std::string& s) {
     pthread_mutex_lock(&syncLock);
@@ -111,7 +115,7 @@ static void* syncThread(void*) {
         return nullptr;
     }
     if (!fetched) {
-        setSyncStatus("Servidor offline (" + urlHostLabel(server) + ") | Cache local mantido");
+        setSyncStatus("Servidor offline (" + urlHostLabel(server) + ") | Pressione OPTIONS para reconectar");
         pthread_mutex_lock(&syncLock);
         syncWorking = false;
         pthread_mutex_unlock(&syncLock);
@@ -127,10 +131,6 @@ static void* syncThread(void*) {
         pthread_mutex_unlock(&syncLock);
         return nullptr;
     }
-
-    writeFile(DATA + "/store-name.txt", parsed.storeName);
-    writeFile(DATA + "/categories.tsv", serializeCategories(parsed.categories));
-    writeFile(DATA + "/catalog.tsv", serialize(parsed.items));
 
     std::string coversDir = DATA + "/covers";
     mkdir(coversDir.c_str(), 0777);
@@ -207,67 +207,127 @@ static void startSync(const std::string& serverUrl, const std::string& token = "
     }
 }
 
-static void* loginThread(void*) {
+static void* codeReqThread(void*) {
     pthread_mutex_lock(&syncLock);
-    std::string server = loginReqServer;
-    std::string user = loginReqUser;
-    std::string pass = loginReqPass;
-    loginReqPass.clear();
+    std::string server = codeReqServer;
     pthread_mutex_unlock(&syncLock);
 
     std::string baseUrl = serverBaseFromCatalogUrl(server);
+    std::string devId = portalNetworkDeviceId();
     std::string respBody, netErr;
     int httpCode = 0;
     bool posted = portalNetworkPostJson(
-        baseUrl + "/api/app/login", buildLoginJson(user, pass), "", respBody, 64 * 1024, httpCode, netErr);
+        baseUrl + "/api/app/device-code/request", buildDeviceCodeRequestJson(devId), "", respBody, 64 * 1024, httpCode, netErr);
 
-    AppSession sess;
+    DeviceCodeResponse parsed;
     std::string errMsg;
     bool ok = false;
     if (posted) {
-        ok = parseAppLoginJson(respBody, sess, errMsg);
-        if (ok) {
-            sess.serverUrl = server;
-            if (sess.username.empty()) sess.username = user;
-            writeFile(DATA + "/session.tsv", serializeAppSession(sess));
-        }
+        ok = parseDeviceCodeResponseJson(respBody, parsed, errMsg);
+        if (ok && parsed.deviceId.empty()) parsed.deviceId = devId;
     } else {
         std::string apiErr = parseApiErrorJson(respBody);
-        errMsg = !apiErr.empty() ? apiErr : (!netErr.empty() ? netErr : "Falha ao conectar ao servidor de login.");
+        errMsg = !apiErr.empty() ? apiErr : (!netErr.empty() ? netErr : "Falha ao solicitar código ao servidor.");
     }
 
     pthread_mutex_lock(&syncLock);
-    loginWorking = false;
-    loginDone = true;
-    loginOk = ok;
-    loginResultErr = errMsg;
-    loginResultSession = sess;
+    codeReqWorking = false;
+    codeReqDone = true;
+    codeReqOk = ok;
+    codeReqResultErr = errMsg;
+    codeReqResult = parsed;
     pthread_mutex_unlock(&syncLock);
     return nullptr;
 }
 
-static void startLogin(const std::string& serverUrl, const std::string& user, const std::string& pass) {
+static void startDeviceCodeRequest(const std::string& serverUrl) {
     pthread_mutex_lock(&syncLock);
-    if (loginWorking) {
+    if (codeReqWorking) {
         pthread_mutex_unlock(&syncLock);
         return;
     }
-    loginWorking = true;
-    loginDone = false;
-    loginReqServer = serverUrl;
-    loginReqUser = user;
-    loginReqPass = pass;
+    codeReqWorking = true;
+    codeReqDone = false;
+    codeReqServer = serverUrl;
     pthread_mutex_unlock(&syncLock);
 
     pthread_t th;
-    if (pthread_create(&th, nullptr, loginThread, nullptr) == 0) {
+    if (pthread_create(&th, nullptr, codeReqThread, nullptr) == 0) {
         pthread_detach(th);
     } else {
         pthread_mutex_lock(&syncLock);
-        loginWorking = false;
-        loginDone = true;
-        loginOk = false;
-        loginResultErr = "Não foi possível iniciar autenticação.";
+        codeReqWorking = false;
+        codeReqDone = true;
+        codeReqOk = false;
+        codeReqResultErr = "Não foi possível solicitar código de autorização.";
+        pthread_mutex_unlock(&syncLock);
+    }
+}
+
+static void* codePollThread(void*) {
+    pthread_mutex_lock(&syncLock);
+    std::string server = codePollServer;
+    std::string pollCode = codePollCode;
+    pthread_mutex_unlock(&syncLock);
+
+    std::string baseUrl = serverBaseFromCatalogUrl(server);
+    std::string devId = portalNetworkDeviceId();
+    std::string respBody, netErr;
+    int httpCode = 0;
+    bool fetched = portalNetworkFetchAuth(
+        baseUrl + "/api/app/device-code/poll?code=" + pollCode + "&device_id=" + devId,
+        "", respBody, 64 * 1024, httpCode, netErr);
+
+    DeviceCodePollResult res;
+    if (fetched) {
+        parseDeviceCodePollJson(respBody, res);
+        if (res.status == "authorized" && !res.session.token.empty()) {
+            res.session.serverUrl = server;
+            writeFile(DATA + "/session.tsv", serializeAppSession(res.session));
+        } else if (res.status.empty()) {
+            res.status = "pending";
+        }
+    } else if (httpCode == 400 || httpCode == 403 || httpCode == 404 || httpCode == 410) {
+        parseDeviceCodePollJson(respBody, res);
+        if (res.status.empty()) {
+            res.status = (httpCode == 410 || httpCode == 404) ? "expired" : "rejected";
+        }
+        if (res.error.empty()) {
+            std::string apiErr = parseApiErrorJson(respBody);
+            res.error = !apiErr.empty() ? apiErr : (!netErr.empty() ? netErr : "Código inválido ou recusado.");
+        }
+    } else {
+        res.status = "network_error";
+        res.error = !netErr.empty() ? netErr : "Aguardando servidor para validar o código...";
+    }
+
+    pthread_mutex_lock(&syncLock);
+    codePollWorking = false;
+    codePollDone = true;
+    codePollResult = res;
+    pthread_mutex_unlock(&syncLock);
+    return nullptr;
+}
+
+static void startDeviceCodePoll(const std::string& serverUrl, const std::string& code) {
+    if (code.empty()) return;
+    pthread_mutex_lock(&syncLock);
+    if (codePollWorking || codeReqWorking) {
+        pthread_mutex_unlock(&syncLock);
+        return;
+    }
+    codePollWorking = true;
+    codePollDone = false;
+    codePollServer = serverUrl;
+    codePollCode = code;
+    pthread_mutex_unlock(&syncLock);
+
+    pthread_t th;
+    if (pthread_create(&th, nullptr, codePollThread, nullptr) == 0) {
+        pthread_detach(th);
+    } else {
+        pthread_mutex_lock(&syncLock);
+        codePollWorking = false;
         pthread_mutex_unlock(&syncLock);
     }
 }
@@ -334,6 +394,7 @@ int main() {
     NativeTextInput textInput;
     UI::KeyboardTarget nativeTarget = UI::KbNone;
     bool keyboardFallback = false, waitPadRelease = false;
+    ui.deviceId = portalNetworkDeviceId();
 
     std::string activeToken;
     AppSession savedSess = loadAppSession(readFile(DATA + "/session.tsv"));
@@ -341,9 +402,10 @@ int main() {
         activeToken = savedSess.token;
         ui.loggedUsername = savedSess.username;
         ui.loggedDisplayName = savedSess.displayName;
-    } else if (!savedSess.username.empty()) {
-        ui.loginUser = savedSess.username;
     }
+
+    bool autoCodeRequested = false;
+    int codePollFrameAccum = 0;
 
     startSync(ui.serverUrl, activeToken);
 
@@ -414,7 +476,7 @@ int main() {
             }
             if (edge & ORBIS_PAD_BUTTON_OPTIONS) {
                 if (ui.loginScreen && !ui.keyboard && !ui.serverPicker) {
-                    startSync(ui.serverUrl, activeToken);
+                    ui.action(REFRESH);
                 } else if (ui.filesModal && !ui.deleteConfirm) {
                     ui.action(REFRESH);
                 } else if (ui.tab == dlTab && !ui.deleteConfirm) {
@@ -435,28 +497,18 @@ int main() {
             }
         }
 
-        // Teclado nativo PS4 para Busca, URL do Servidor ou Login
-        if (!ui.keyboard && !ui.serverEditRequest) keyboardFallback = false;
-        if ((ui.keyboard || ui.serverEditRequest) && !keyboardFallback && !textInput.isOpen()) {
-            UI::KeyboardTarget reqTarget = ui.serverEditRequest ? UI::KbServer : ui.kbTarget;
-            std::string initial = (reqTarget == UI::KbServer) ? ui.serverUrl
-                                : (reqTarget == UI::KbLoginUser) ? ui.loginUser
-                                : (reqTarget == UI::KbLoginPass) ? ui.loginPass
-                                : ui.query;
-            std::string title = (reqTarget == UI::KbServer) ? "Endereço do Painel Web"
-                              : (reqTarget == UI::KbLoginUser) ? "Usuário da Loja"
-                              : (reqTarget == UI::KbLoginPass) ? "Senha da Loja"
-                              : "Buscar homebrew";
-            std::string ph = (reqTarget == UI::KbServer) ? "http://192.168.1.2:8765"
-                           : (reqTarget == UI::KbLoginUser) ? "Digite seu usuário"
-                           : (reqTarget == UI::KbLoginPass) ? "Digite sua senha"
-                           : "Nome do homebrew";
-            bool urlMode = (reqTarget == UI::KbServer);
+        // Teclado nativo PS4 para Busca (IP fixo em HB_STORE_FIXED_SERVER_URL)
+        if (!ui.keyboard) keyboardFallback = false;
+        ui.serverEditRequest = false;
+        if (ui.keyboard && !keyboardFallback && !textInput.isOpen()) {
+            UI::KeyboardTarget reqTarget = ui.kbTarget;
+            std::string initial = ui.query;
+            std::string title = "Buscar homebrew";
+            std::string ph = "Nome do homebrew";
 
             ui.keyboard = false;
-            ui.serverEditRequest = false;
             std::string error;
-            if (!textInput.begin(user, initial, error, title, ph, urlMode)) {
+            if (!textInput.begin(user, initial, error, title, ph, false)) {
                 ui.keyboard = true;
                 ui.kbTarget = reqTarget;
                 ui.kbBuffer = initial;
@@ -477,18 +529,7 @@ int main() {
                 held = 0;
                 ui.dirty = true;
                 if (result == NativeTextInput::Accepted) {
-                    if (nativeTarget == UI::KbServer) {
-                        ui.newServerUrl = text;
-                        ui.serverSaveRequest = true;
-                    } else if (nativeTarget == UI::KbLoginUser) {
-                        ui.loginUser = text;
-                        ui.loginError.clear();
-                        if (ui.loginPass.empty()) ui.loginField = 1;
-                    } else if (nativeTarget == UI::KbLoginPass) {
-                        ui.loginPass = text;
-                        ui.loginError.clear();
-                        ui.loginField = 2;
-                    } else {
+                    if (nativeTarget == UI::KbSearch) {
                         ui.query = text;
                         ui.selected = 0;
                         ui.filter();
@@ -500,50 +541,26 @@ int main() {
             }
         }
 
-        // Ações de Servidor
-        if (ui.serverResetRequest) {
-            ui.serverResetRequest = false;
-            unlink((DATA + "/server.txt").c_str());
-            std::string nextUrl = readDefaultServerUrl("/app0/assets", DATA);
-            if (nextUrl != ui.serverUrl) {
-                activeToken.clear();
-                ui.loggedUsername.clear();
-                ui.loggedDisplayName.clear();
-                unlink((DATA + "/session.tsv").c_str());
-            }
-            ui.serverUrl = nextUrl;
-            ui.covers.clear();
-            ui.notice = "Servidor restaurado para " + ui.serverUrl;
-            startSync(ui.serverUrl, activeToken);
-            ui.dirty = true;
-        }
-        if (ui.serverSaveRequest) {
-            ui.serverSaveRequest = false;
-            std::string normalized = normalizeServerUrl(ui.newServerUrl);
-            if (normalized.empty()) {
-                ui.notice = "URL inválida. Use o formato http://192.168.1.2:8765";
-            } else {
-                if (normalized != ui.serverUrl) {
-                    activeToken.clear();
-                    ui.loggedUsername.clear();
-                    ui.loggedDisplayName.clear();
-                    unlink((DATA + "/session.tsv").c_str());
-                }
-                writeFile(DATA + "/server.txt", normalized + "\n");
-                ui.serverUrl = normalized;
-                ui.covers.clear();
-                ui.notice = "Servidor salvo: " + normalized;
-                startSync(ui.serverUrl, activeToken);
-            }
-            ui.dirty = true;
-        }
+        // Ações de Servidor fixo / Código de Ativação
+        ui.serverResetRequest = false;
+        ui.serverSaveRequest = false;
         if (ui.serverSyncRequest) {
             ui.serverSyncRequest = false;
             startSync(ui.serverUrl, activeToken);
         }
-        if (ui.loginSubmitRequest) {
-            ui.loginSubmitRequest = false;
-            startLogin(ui.serverUrl, ui.loginUser, ui.loginPass);
+        if (ui.requestNewCodeSignal) {
+            ui.requestNewCodeSignal = false;
+            autoCodeRequested = true;
+            ui.codeRequesting = true;
+            codePollFrameAccum = 0;
+            startDeviceCodeRequest(ui.serverUrl);
+        }
+        if (ui.pollCodeSignal) {
+            ui.pollCodeSignal = false;
+            if (!ui.activationCode.empty()) {
+                codePollFrameAccum = 0;
+                startDeviceCodePoll(ui.serverUrl, ui.activationCode);
+            }
         }
         if (ui.logoutRequest) {
             ui.logoutRequest = false;
@@ -552,15 +569,18 @@ int main() {
             unlink((DATA + "/session.tsv").c_str());
             ui.loggedUsername.clear();
             ui.loggedDisplayName.clear();
-            ui.loginPass.clear();
-            ui.loginError.clear();
-            ui.loginField = 0;
+            ui.activationCode.clear();
+            ui.activationExpiresIn = 0;
+            ui.activationError.clear();
+            ui.activationField = 0;
             ui.loginScreen = true;
+            autoCodeRequested = false;
+            codePollFrameAccum = 0;
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
             ui.tab = 0;
-            ui.notice = "Você saiu da conta.";
+            ui.notice = "Sessão encerrada neste console.";
             ui.dirty = true;
         }
 
@@ -659,7 +679,7 @@ int main() {
             ui.dirty = true;
         }
 
-        // Atualiza UI quando sincronização/login termina ou baixa novas capas
+        // Atualiza UI quando sincronização / código / polling termina ou baixa novas capas
         bool triggerPostLoginSync = false;
         pthread_mutex_lock(&syncLock);
         bool wasSyncing = ui.syncing;
@@ -676,12 +696,15 @@ int main() {
         if (syncAllowBypassLogin) {
             if (ui.loginScreen) {
                 ui.loginScreen = false;
-                ui.loginError.clear();
+                ui.activationCode.clear();
+                ui.activationError.clear();
+                ui.activationExpiresIn = 0;
                 ui.dirty = true;
             }
             syncAllowBypassLogin = false;
         }
         if (syncAuthRequired) {
+            bool hadSavedSession = syncClearSession;
             syncAuthRequired = false;
             if (syncClearSession) {
                 syncClearSession = false;
@@ -690,12 +713,19 @@ int main() {
                 ui.loggedUsername.clear();
                 ui.loggedDisplayName.clear();
             }
+            bool wasHidden = !ui.loginScreen;
             ui.loginScreen = true;
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
-            if (!syncAuthMessage.empty()) ui.loginError = syncAuthMessage;
+            if (!syncAuthMessage.empty() && (hadSavedSession || ui.activationCode.empty())) {
+                ui.activationError = syncAuthMessage;
+            }
             syncAuthMessage.clear();
+            if (wasHidden) {
+                autoCodeRequested = false;
+                codePollFrameAccum = 0;
+            }
             ui.dirty = true;
         }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
@@ -713,31 +743,94 @@ int main() {
             ui.categories = syncedCatalog.categories;
             ui.games = syncedCatalog.items;
             ui.loginScreen = false;
+            ui.activationCode.clear();
+            ui.activationError.clear();
+            ui.activationExpiresIn = 0;
             ui.filter();
             if (ui.detail) ui.refreshDetailFileProbe();
             syncReady = false;
         }
-        if (loginDone) {
-            loginDone = false;
-            ui.loginSubmitting = false;
-            if (loginOk) {
-                activeToken = loginResultSession.token;
-                ui.loggedUsername = loginResultSession.username;
-                ui.loggedDisplayName = loginResultSession.displayName;
-                ui.loginPass.clear();
-                ui.loginError.clear();
-                ui.loginScreen = false;
-                std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
-                ui.notice = "Bem-vindo, " + greet + "!";
-                triggerPostLoginSync = true;
-            } else {
-                ui.loginScreen = true;
-                ui.loginError = loginResultErr;
+        if (codeReqDone) {
+            codeReqDone = false;
+            ui.codeRequesting = false;
+            if (codeReqOk && ui.loginScreen) {
+                ui.activationCode = codeReqResult.code;
+                ui.activationExpiresIn = codeReqResult.expiresIn;
+                if (!codeReqResult.deviceId.empty()) ui.deviceId = codeReqResult.deviceId;
+                ui.activationError.clear();
+                codePollFrameAccum = 0;
+            } else if (!codeReqOk) {
+                ui.activationCode.clear();
+                ui.activationExpiresIn = 0;
+                ui.activationError = codeReqResultErr;
             }
             ui.dirty = true;
         }
+        if (codePollDone) {
+            codePollDone = false;
+            if (codePollResult.status == "authorized" && !codePollResult.session.token.empty()) {
+                activeToken = codePollResult.session.token;
+                ui.loggedUsername = codePollResult.session.username;
+                ui.loggedDisplayName = codePollResult.session.displayName;
+                ui.activationCode.clear();
+                ui.activationExpiresIn = 0;
+                ui.activationError.clear();
+                ui.loginScreen = false;
+                autoCodeRequested = false;
+                codePollFrameAccum = 0;
+                std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
+                ui.notice = "Console autorizado! Bem-vindo, " + greet + "!";
+                triggerPostLoginSync = true;
+                ui.dirty = true;
+            } else if (codePollResult.status == "rejected" || codePollResult.status == "expired") {
+                ui.activationCode.clear();
+                ui.activationExpiresIn = 0;
+                ui.activationError = !codePollResult.error.empty()
+                    ? codePollResult.error
+                    : (codePollResult.status == "rejected"
+                           ? "Código recusado no painel. Pressione X para gerar outro."
+                           : "Código expirado. Pressione X para gerar um novo.");
+                ui.dirty = true;
+            } else if (codePollResult.status == "pending") {
+                if (codePollResult.expiresIn > 0) {
+                    int prevMins = std::max(1, (ui.activationExpiresIn + 59) / 60);
+                    int nextMins = std::max(1, (codePollResult.expiresIn + 59) / 60);
+                    ui.activationExpiresIn = codePollResult.expiresIn;
+                    if (prevMins != nextMins) ui.dirty = true;
+                }
+                if (!ui.activationError.empty()) {
+                    ui.activationError.clear();
+                    ui.dirty = true;
+                }
+            }
+        }
         pthread_mutex_unlock(&syncLock);
         if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
+
+        // Na tela de autorização: gera o código automaticamente ao abrir e verifica aprovação a cada ~3s
+        if (ui.loginScreen) {
+            if (!ui.activationCode.empty()) {
+                ++codePollFrameAccum;
+                if (codePollFrameAccum >= 180) {
+                    codePollFrameAccum = 0;
+                    if (!ui.codeRequesting) {
+                        startDeviceCodePoll(ui.serverUrl, ui.activationCode);
+                    }
+                }
+            } else {
+                codePollFrameAccum = 0;
+                if (!autoCodeRequested && !ui.codeRequesting) {
+                    autoCodeRequested = true;
+                    ui.codeRequesting = true;
+                    ui.activationError.clear();
+                    startDeviceCodeRequest(ui.serverUrl);
+                    ui.dirty = true;
+                }
+            }
+        } else {
+            autoCodeRequested = false;
+            codePollFrameAccum = 0;
+        }
 
         bool animSpin = ui.hasSpinnerActivity();
         bool animTick = animSpin && ((ui.tab == ui.downloadsTab() || ui.detail || ui.loginScreen) ? (frame & 1) == 0 : (frame % 3) == 0);

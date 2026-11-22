@@ -6,6 +6,7 @@ typedef void (*PortalDownloadProgressFn)(void* user, uint64_t done, uint64_t tot
 typedef int (*PortalDownloadStopFn)(void* user);
 
 bool portalNetworkInit();
+std::string portalNetworkDeviceId();
 bool portalNetworkFetch(const std::string& url, std::string& out, size_t cap, const std::string& referer = "");
 bool portalNetworkFetchAuth(const std::string& url, const std::string& authToken, std::string& out, size_t cap,
                             int& httpCodeOut, std::string& error);

@@ -11,7 +11,7 @@ static bool keepalive = false, bodySent = false;
 static int responseCode = 200;
 static int expectedMethod = ORBIS_METHOD_GET;
 static uint64_t lastReqContentLen = 0;
-static std::string lastRangeHeader, lastAppTokenHeader, lastContentTypeHeader, lastPostBody, mockResponseBody = "page";
+static std::string lastRangeHeader, lastAppTokenHeader, lastDeviceIdHeader, lastContentTypeHeader, lastPostBody, mockResponseBody = "page";
 
 static void checkRoots() {
     assert(loadedRoots && rootCount == 118);
@@ -29,6 +29,17 @@ static void checkRoots() {
 extern "C" uint32_t sceSysmoduleLoadModuleInternal(enum OrbisSysModuleInternal) { return 0; }
 extern "C" int32_t sceNetInit() { return 0; }
 extern "C" int32_t sceNetCtlInit() { return 0; }
+extern "C" int32_t sceNetGetMacAddress(OrbisNetEtherAddr* addr, int32_t) {
+    if (!addr) return -1;
+    unsigned char mac[6] = {0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33};
+    memcpy(addr->data, mac, 6);
+    return 0;
+}
+extern "C" int32_t sceNetCtlGetInfo(int32_t, OrbisNetCtlInfo* info) {
+    if (!info) return -1;
+    memset(info, 0, sizeof(*info));
+    return -1;
+}
 static int tcpSentBytes = 0, tcpPortSeen = 0, tcpClosed = 0;
 extern "C" int nbNetSocket(const char*, int domain, int type, int) {
     assert(domain == 2 && type == 1);
@@ -82,6 +93,7 @@ extern "C" int32_t sceHttpCreateRequestWithURL(int32_t id, int32_t method, const
     bodySent = false;
     lastRangeHeader.clear();
     lastAppTokenHeader.clear();
+    lastDeviceIdHeader.clear();
     lastContentTypeHeader.clear();
     lastPostBody.clear();
     return 6;
@@ -92,6 +104,7 @@ extern "C" int32_t sceHttpAddRequestHeader(int32_t, const char* name, const char
         std::string k(name);
         if (k == "Range") lastRangeHeader = val;
         else if (k == "X-App-Token") lastAppTokenHeader = val;
+        else if (k == "X-Device-Id") lastDeviceIdHeader = val;
         else if (k == "Content-Type") lastContentTypeHeader = val;
     }
     return 0;
@@ -159,16 +172,17 @@ int main() {
     expectedMethod = ORBIS_METHOD_GET;
     mockResponseBody = "{\"error\":\"Token invalido\"}";
     responseCode = 401;
+    assert(portalNetworkDeviceId() == "PS4-AA:BB:CC:11:22:33");
     assert(!portalNetworkFetchAuth("http://192.168.1.2:8765/api/catalog.json", "tok123", authOut, 4096, httpCode, authErr));
-    assert(httpCode == 401 && lastAppTokenHeader == "tok123" && authOut == mockResponseBody);
+    assert(httpCode == 401 && lastAppTokenHeader == "tok123" && lastDeviceIdHeader == "PS4-AA:BB:CC:11:22:33" && authOut == mockResponseBody);
 
     expectedMethod = ORBIS_METHOD_POST;
     responseCode = 200;
     mockResponseBody = "{\"ok\":true,\"token\":\"abc\"}";
-    std::string reqJson = "{\"username\":\"u1\",\"password\":\"p1\"}";
+    std::string reqJson = "{\"username\":\"u1\",\"password\":\"p1\",\"device_id\":\"PS4-AA:BB:CC:11:22:33\"}";
     assert(portalNetworkPostJson("http://192.168.1.2:8765/api/app/login", reqJson, "", authOut, 4096, httpCode, authErr));
     assert(httpCode == 200 && lastReqContentLen == reqJson.size() && lastPostBody == reqJson);
-    assert(lastContentTypeHeader == "application/json; charset=utf-8" && authOut == mockResponseBody);
+    assert(lastDeviceIdHeader == "PS4-AA:BB:CC:11:22:33" && lastContentTypeHeader == "application/json; charset=utf-8" && authOut == mockResponseBody);
     expectedMethod = ORBIS_METHOD_GET;
     mockResponseBody = "page";
 

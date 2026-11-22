@@ -67,7 +67,7 @@ sce_sys/param.sfo: tools/package.py
 
 assets/server.txt:
 	@mkdir -p assets
-	printf 'http://192.168.1.2:8765\n' > $@
+	printf 'http://192.168.1.8:8765\n' > $@
 
 pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/server.txt assets/bgft_template.elf assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
 	python3 tools/package.py gp4

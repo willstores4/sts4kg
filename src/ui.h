@@ -292,7 +292,7 @@ enum Action {
 };
 
 struct UI {
-    enum KeyboardTarget { KbNone = 0, KbSearch = 1, KbServer = 2, KbLoginUser = 3, KbLoginPass = 4 };
+    enum KeyboardTarget { KbNone = 0, KbSearch = 1, KbServer = 2 };
 
     Canvas c;
     std::string base, data;
@@ -317,13 +317,14 @@ struct UI {
     bool kbShift = false;
     std::string notice;
 
-    // Login no Aplicativo (Tela inicial quando Painel exige usuário)
+    // Autorização por Código no Aplicativo (Tela inicial quando Painel exige autorização do console)
     bool loginScreen = false;
-    bool loginSubmitting = false;
-    int loginField = 0; // 0 = Usuário, 1 = Senha, 2 = Entrar, 3 = Servidor
-    std::string loginUser, loginPass, loginError;
-    std::string loggedUsername, loggedDisplayName;
-    bool loginSubmitRequest = false, logoutRequest = false;
+    bool codeRequesting = false;
+    int activationField = 0; // 0 = Gerar Novo Código, 1 = Servidor / Opções
+    std::string activationCode, activationError;
+    int activationExpiresIn = 0;
+    std::string loggedUsername, loggedDisplayName, deviceId;
+    bool requestNewCodeSignal = false, pollCodeSignal = false, logoutRequest = false;
 
     // Fila de instalações / Notificações PS4
     std::vector<InstallPackage> tasks;
@@ -434,11 +435,7 @@ struct UI {
     }
 
     bool hasSpinnerActivity() const {
-        return syncing || loginSubmitting || primaryActiveDirectTask() != nullptr;
-    }
-
-    static std::string maskSecret(size_t len) {
-        return std::string(len, '*');
+        return syncing || codeRequesting || (loginScreen && !activationCode.empty()) || primaryActiveDirectTask() != nullptr;
     }
 
     void drawProgressBar(int x, int y, int w, int h, int pct, bool active, uint32_t trackColor, uint32_t fillColor) {
@@ -587,20 +584,6 @@ struct UI {
           logo(loadBitmapRGBA(base + "/brand/nullstore-bag.png")),
           caseFrame(loadBlueCase(base + "/brand/ps4-case-frame.png")) {
         serverUrl = readDefaultServerUrl(base, data);
-        categories = loadCategories(readFile(data + "/categories.tsv"));
-        games = loadCatalog(readFile(data + "/catalog.tsv"));
-        std::string savedName = trimStr(readFile(data + "/store-name.txt"));
-        if (!savedName.empty()) storeName = savedName;
-
-        std::string fav = readFile(data + "/favorites.txt");
-        size_t p = 0;
-        while (p < fav.size()) {
-            int id = atoi(fav.c_str() + p);
-            if (id > 0) favorites.insert(id);
-            auto e = fav.find('\n', p);
-            if (e == std::string::npos) break;
-            p = e + 1;
-        }
         filter();
     }
 
@@ -654,11 +637,6 @@ struct UI {
         if (!g) return;
         if (favorites.count(g->id)) favorites.erase(g->id);
         else favorites.insert(g->id);
-        std::string s;
-        for (int id : favorites) s += std::to_string(id) + "\n";
-        if (!writeFile(data + "/favorites.txt", s)) {
-            notice = "Não foi possível salvar favoritos.";
-        }
         filter();
     }
 
@@ -882,14 +860,6 @@ struct UI {
                     } else if (kbTarget == KbServer) {
                         newServerUrl = kbBuffer;
                         serverSaveRequest = true;
-                    } else if (kbTarget == KbLoginUser) {
-                        loginUser = kbBuffer;
-                        loginError.clear();
-                        if (loginPass.empty()) loginField = 1;
-                    } else if (kbTarget == KbLoginPass) {
-                        loginPass = kbBuffer;
-                        loginError.clear();
-                        loginField = 2;
                     }
                     keyboard = false;
                     kbTarget = KbNone;
@@ -900,21 +870,15 @@ struct UI {
         }
 
         if (serverPicker) {
-            int nOpts = loggedUsername.empty() ? 4 : 5;
+            int nOpts = loggedUsername.empty() ? 2 : 3;
             if (a == BACK) { serverPicker = false; return; }
             if (a == UP) serverChoice = (serverChoice + nOpts - 1) % nOpts;
             else if (a == DOWN) serverChoice = (serverChoice + 1) % nOpts;
             else if (a == CONFIRM) {
                 serverPicker = false;
                 if (serverChoice == 0) {
-                    kbTarget = KbServer;
-                    kbBuffer = serverUrl;
-                    serverEditRequest = true;
-                } else if (serverChoice == 1) {
                     serverSyncRequest = true;
-                } else if (serverChoice == 2) {
-                    serverResetRequest = true;
-                } else if (serverChoice == 3 && !loggedUsername.empty()) {
+                } else if (serverChoice == 1 && !loggedUsername.empty()) {
                     logoutRequest = true;
                 }
             }
@@ -928,37 +892,28 @@ struct UI {
                 return;
             }
             if (a == REFRESH) {
+                if (!activationCode.empty()) pollCodeSignal = true;
                 serverSyncRequest = true;
                 return;
             }
-            if (loginSubmitting) return;
-            if (a == UP || a == TAB_PREV) { loginField = (loginField + 3) % 4; return; }
-            if (a == DOWN || a == TAB_NEXT) { loginField = (loginField + 1) % 4; return; }
+            if (a == UP || a == LEFT || a == TAB_PREV || a == DOWN || a == RIGHT || a == TAB_NEXT) {
+                activationField = (activationField == 0) ? 1 : 0;
+                return;
+            }
             if (a == SEARCH) {
-                if (loginUser.empty()) {
-                    keyboard = true; kbTarget = KbLoginUser; kbBuffer = loginUser; key = 0; kbShift = false;
-                } else if (loginPass.empty()) {
-                    keyboard = true; kbTarget = KbLoginPass; kbBuffer = loginPass; key = 0; kbShift = false;
-                } else {
-                    loginError.clear();
-                    loginSubmitting = true;
-                    loginSubmitRequest = true;
+                if (!codeRequesting) {
+                    activationError.clear();
+                    codeRequesting = true;
+                    requestNewCodeSignal = true;
                 }
                 return;
             }
             if (a == CONFIRM) {
-                if (loginField == 0) {
-                    keyboard = true; kbTarget = KbLoginUser; kbBuffer = loginUser; key = 0; kbShift = false;
-                } else if (loginField == 1) {
-                    keyboard = true; kbTarget = KbLoginPass; kbBuffer = loginPass; key = 0; kbShift = false;
-                } else if (loginField == 2) {
-                    if (loginUser.empty() || loginPass.empty()) {
-                        loginError = "Preencha usuário e senha para entrar.";
-                        loginField = loginUser.empty() ? 0 : 1;
-                    } else {
-                        loginError.clear();
-                        loginSubmitting = true;
-                        loginSubmitRequest = true;
+                if (activationField == 0) {
+                    if (!codeRequesting) {
+                        activationError.clear();
+                        codeRequesting = true;
+                        requestNewCodeSignal = true;
                     }
                 } else {
                     serverPicker = true;
@@ -1173,18 +1128,19 @@ struct UI {
         c.rect(0, 0, 1920, 1080, bg);
 
         if (loginScreen) {
-            // Painel esquerdo de marca + informações do servidor
+            // Painel esquerdo de marca + informações do servidor e vínculo
             c.rect(0, 0, 700, 1080, 0x08101c);
             c.rect(700, 0, 2, 1080, 0x15253b);
-            c.image(logo, 110, 210, 108, 108);
-            c.text(storeName, 110, 385, 46, white, 540);
-            c.text(storeSubtitle, 110, 426, 22, cyan, 540);
-            c.rect(110, 462, 460, 2, 0x1a2c44);
-            c.text("Acesso protegido por usuário e senha.", 110, 514, 23, white, 540);
-            c.text("Cadastre ou gerencie contas no Painel Web (aba Usuários).", 110, 554, 19, muted, 540);
+            c.image(logo, 110, 200, 108, 108);
+            c.text(storeName, 110, 375, 46, white, 540);
+            c.text(storeSubtitle, 110, 416, 22, cyan, 540);
+            c.rect(110, 452, 460, 2, 0x1a2c44);
+            c.text("Acesso autorizado via Painel Web.", 110, 504, 23, white, 540);
+            c.lines("Este console gera um código único e fica vinculado ao usuário aprovado no painel.",
+                    110, 544, 19, muted, 520, 2);
 
-            c.rounded(110, 635, 520, 150, 10, 0x0b182a);
-            c.rect(110, 635, 5, 150, cyan);
+            c.rounded(110, 635, 520, 184, 10, 0x0b182a);
+            c.rect(110, 635, 5, 184, cyan);
             c.text("SERVIDOR CONECTADO", 136, 672, 16, muted, 470);
             c.text(serverUrl, 136, 712, 22, white, 470);
             if (syncing) {
@@ -1193,52 +1149,75 @@ struct UI {
             } else {
                 c.text(status, 136, 757, 17, muted, 470);
             }
+            if (!deviceId.empty()) {
+                c.text("ID do Console: " + deviceId, 136, 794, 16, cyan, 470);
+            }
 
-            // Card principal de Login
+            // Card principal de Autorização por Código
             c.rounded(780, 155, 1020, 745, 14, 0x0b1526);
             c.rect(780, 155, 7, 745, cyan);
-            c.text("Entrar na Loja", 845, 232, 44, white, 880);
-            c.text("Informe as credenciais cadastradas no painel para acessar o catálogo.", 845, 274, 20, muted, 890);
+            c.text("Autorizar Console PS4", 845, 228, 44, white, 880);
+            c.text("Abra o Painel Web em " + serverUrl + " (aba Usuários) e aprove este código:",
+                   845, 272, 20, muted, 890);
 
-            // Campo 0: Usuário
-            c.text("USUÁRIO", 845, 336, 17, loginField == 0 ? cyan : muted, 300);
-            c.rounded(845, 352, 885, 64, 8, loginField == 0 ? 0x12325c : 0x060d18);
-            if (loginField == 0) c.rect(845, 352, 5, 64, cyan);
-            std::string uTxt = loginUser.empty() ? "Pressione X para digitar o usuário..." : loginUser;
-            c.text(uTxt, 868, 394, 25, loginUser.empty() ? muted : white, 840);
-
-            // Campo 1: Senha
-            c.text("SENHA", 845, 456, 17, loginField == 1 ? cyan : muted, 300);
-            c.rounded(845, 472, 885, 64, 8, loginField == 1 ? 0x12325c : 0x060d18);
-            if (loginField == 1) c.rect(845, 472, 5, 64, cyan);
-            std::string pTxt = loginPass.empty() ? "Pressione X para digitar a senha..." : maskSecret(loginPass.size());
-            c.text(pTxt, 868, 514, 25, loginPass.empty() ? muted : white, 840);
-
-            // Mensagem de erro de login
-            if (!loginError.empty()) {
-                c.rounded(845, 562, 885, 54, 8, 0x351218);
-                c.rect(845, 562, 5, 54, 0xff6b6b);
-                c.text(loginError, 868, 598, 21, 0xffb4b4, 840);
+            // Caixa do Código de Ativação
+            c.rounded(845, 316, 885, 190, 12, 0x060d18);
+            c.rect(845, 316, 6, 190, cyan);
+            c.text("CÓDIGO DE AUTORIZAÇÃO", 874, 354, 17, cyan, 450);
+            if (!activationCode.empty() && activationExpiresIn > 0) {
+                int minsLeft = std::max(1, (activationExpiresIn + 59) / 60);
+                std::string ttlTxt = "Válido por " + std::to_string(minsLeft) + " min";
+                int ttlW = c.textWidth(ttlTxt, 17);
+                c.text(ttlTxt, 1704 - ttlW, 354, 17, muted, ttlW + 8);
             }
 
-            // Campo 2: Botão Entrar | Campo 3: Configurar Servidor
-            uint32_t btnBg = (loginField == 2) ? cyan : 0x15365e;
-            uint32_t btnFg = (loginField == 2) ? bg : white;
-            c.rounded(845, 650, 500, 68, 8, btnBg);
-            if (loginSubmitting) {
-                c.spinner(885, 684, 13, 3, spinnerAngle(), loginField == 2 ? 0x1a5f9e : 0x0b1f38, loginField == 2 ? bg : white);
-                c.text("Autenticando...", 916, 694, 26, btnFg, 400);
+            if (codeRequesting && activationCode.empty()) {
+                c.spinner(900, 440, 16, 3, spinnerAngle(), 0x163154, 0x5cb8ff);
+                c.text("Gerando código de autorização...", 936, 451, 30, white, 760);
+            } else if (!activationCode.empty()) {
+                int codeW = c.textWidth(activationCode, 76);
+                int codeX = 845 + std::max(28, (885 - codeW) / 2);
+                c.text(activationCode, codeX, 462, 76, white, 830);
             } else {
-                c.text("X  Entrar na Loja", 878, 694, 26, btnFg, 440);
+                c.text("Nenhum código ativo no momento", 874, 446, 28, muted, 820);
             }
 
-            uint32_t srvBg = (loginField == 3) ? cyan : 0x112540;
-            uint32_t srvFg = (loginField == 3) ? bg : white;
-            c.rounded(1370, 650, 360, 68, 8, srvBg);
-            c.text("L3  Alterar Servidor", 1400, 694, 23, srvFg, 310);
+            // Status / Espera automática / Erro
+            if (!activationError.empty()) {
+                c.rounded(845, 534, 885, 72, 8, 0x351218);
+                c.rect(845, 534, 5, 72, 0xff6b6b);
+                c.lines(activationError, 870, 566, 19, 0xffb4b4, 836, 2);
+            } else if (!activationCode.empty()) {
+                c.rounded(845, 534, 885, 72, 8, 0x0d213a);
+                c.rect(845, 534, 5, 72, 0x34d399);
+                c.spinner(876, 570, 11, 2, spinnerAngle(), 0x163154, 0x34d399);
+                c.text("Aguardando aprovação no Painel Web... (verificação automática)", 904, 577, 21, white, 800);
+            } else {
+                c.rounded(845, 534, 885, 72, 8, 0x0d1b2f);
+                c.rect(845, 534, 5, 72, cyan);
+                c.text("Pressione X para gerar um código de autorização para este PS4.", 870, 577, 21, muted, 836);
+            }
 
-            c.text("D-pad  Mover     X  Editar / Entrar     TRIÂNGULO  Entrar rápido     L3  Servidor     OPTIONS  Atualizar",
-                   845, 815, 19, muted, 900);
+            // Botão 0: Gerar Novo Código | Botão 1: Servidor / Opções
+            uint32_t btnBg = (activationField == 0) ? cyan : 0x15365e;
+            uint32_t btnFg = (activationField == 0) ? bg : white;
+            c.rounded(845, 646, 500, 68, 8, btnBg);
+            if (codeRequesting) {
+                c.spinner(885, 680, 13, 3, spinnerAngle(), activationField == 0 ? 0x1a5f9e : 0x0b1f38, activationField == 0 ? bg : white);
+                c.text("Gerando código...", 916, 690, 26, btnFg, 400);
+            } else {
+                c.text("X  Gerar Novo Código", 878, 690, 26, btnFg, 440);
+            }
+
+            uint32_t srvBg = (activationField == 1) ? cyan : 0x112540;
+            uint32_t srvFg = (activationField == 1) ? bg : white;
+            c.rounded(1370, 646, 360, 68, 8, srvBg);
+            c.text("L3  Opções / Sync", 1400, 690, 23, srvFg, 310);
+
+            c.text("1. Abra " + serverUrl + "   •   2. Usuários > Autorizar PS4   •   3. O app libera sozinho",
+                   845, 770, 19, cyan, 900);
+            c.text("D-pad  Mover     X  Novo código     TRIÂNGULO  Novo código     OPTIONS  Verificar agora     L3  Opções",
+                   845, 824, 18, muted, 900);
         } else {
         // Cabeçalho superior compacto
         c.rect(315, 0, 1605, 114, 0x080e18);
@@ -1639,48 +1618,42 @@ struct UI {
         }
         } // fim da tela principal (!loginScreen)
 
-        // Modal Configurar Servidor / Conta
+        // Modal Servidor Fixo / Conta
         if (serverPicker) {
-            int nOpts = loggedUsername.empty() ? 4 : 5;
-            int modalH = loggedUsername.empty() ? 640 : 720;
-            c.rect(365, 210, 1230, modalH, 0x091c34);
-            c.rect(365, 210, 7, modalH, cyan);
-            c.text("Painel Web de Sincronização", 420, 275, 40, white);
-            c.text("Servidor atual: " + serverUrl, 420, 326, 24, cyan, 1120);
+            int nOpts = loggedUsername.empty() ? 2 : 3;
+            int modalH = loggedUsername.empty() ? 480 : 560;
+            c.rect(365, 250, 1230, modalH, 0x091c34);
+            c.rect(365, 250, 7, modalH, cyan);
+            c.text("Servidor & Conta", 420, 315, 40, white);
+            c.text("Servidor fixo: " + serverUrl, 420, 366, 24, cyan, 1120);
             if (!loggedUsername.empty()) {
                 c.text("Usuário logado: " + (loggedDisplayName.empty() ? loggedUsername : loggedDisplayName + " (" + loggedUsername + ")"),
-                       420, 362, 20, 0x34d399, 1120);
+                       420, 402, 20, 0x34d399, 1120);
             } else {
-                c.text("Sincroniza categorias, links de .pkg e capas diretamente do seu painel.", 420, 362, 22, muted, 1120);
+                c.text("Sincroniza o catálogo em memória diretamente deste servidor fixo.", 420, 402, 22, muted, 1120);
             }
-            std::string logoutOpt = "Trocar usuário / Sair da conta (" + loggedUsername + ")";
-            const char* opts[5] = {
-                "Editar IP / URL do servidor (Teclado PS4)",
+            std::string logoutOpt = "Desvincular / Sair da conta (" + loggedUsername + ")";
+            const char* opts[3] = {
                 "Sincronizar catálogo agora",
-                "Restaurar padrão (http://192.168.1.2:8765)",
                 loggedUsername.empty() ? "Voltar" : logoutOpt.c_str(),
                 "Voltar"
             };
             for (int i = 0; i < nOpts; ++i) {
-                int y = 415 + i * 82;
+                int y = 450 + i * 82;
                 c.rect(420, y, 1120, 64, i == serverChoice ? cyan : 0x12325c);
                 c.text(opts[i], 448, y + 43, 26, i == serverChoice ? bg : white, 1060);
             }
-            c.text("X  Selecionar     CÍRCULO  Fechar", 420, 210 + modalH - 42, 24, muted);
+            c.text("X  Selecionar     CÍRCULO  Fechar", 420, 250 + modalH - 42, 24, muted);
         }
 
-        // Teclado Virtual Fallback (Busca, URL ou Login)
+        // Teclado Virtual Fallback (Busca)
         if (keyboard) {
             c.rect(350, 205, 1260, 745, 0x091c34);
             c.rect(350, 205, 7, 745, cyan);
-            const char* kbTitle = (kbTarget == KbServer) ? "Endereço do Painel Web"
-                                : (kbTarget == KbLoginUser) ? "Usuário da Loja"
-                                : (kbTarget == KbLoginPass) ? "Senha da Loja"
-                                : "Buscar Homebrew";
+            const char* kbTitle = (kbTarget == KbServer) ? "Endereço do Painel Web" : "Buscar Homebrew";
             c.text(kbTitle, 400, 265, 38, white);
             c.rect(400, 295, 1150, 62, 0x050912);
-            std::string dispBuf = (kbTarget == KbLoginPass) ? maskSecret(kbBuffer.size()) : kbBuffer;
-            c.text(dispBuf + "_", 422, 338, 30, white, 1100);
+            c.text(kbBuffer + "_", 422, 338, 30, white, 1100);
 
             const char* lowerKeys = "abcdefghijklmnopqrstuvwxyz0123456789.:/-_";
             const char* shiftKeys = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@_-*";

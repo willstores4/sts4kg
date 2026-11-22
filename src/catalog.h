@@ -32,6 +32,20 @@ struct AppSession {
     std::string displayName;
 };
 
+struct DeviceCodeResponse {
+    std::string code;
+    std::string rawCode;
+    std::string deviceId;
+    int expiresIn = 0;
+};
+
+struct DeviceCodePollResult {
+    std::string status; // pending, authorized, rejected, expired
+    std::string error;
+    int expiresIn = 0;
+    AppSession session;
+};
+
 struct GameLink {
     std::string label;
     std::string url;
@@ -237,12 +251,12 @@ inline std::string resolveServerUrl(const std::string& serverBase, const std::st
     return base + "/" + u;
 }
 
+#define HB_STORE_FIXED_SERVER_URL "http://192.168.1.8:8765"
+
 inline std::string readDefaultServerUrl(const std::string& baseAssets, const std::string& dataDir) {
-    std::string saved = normalizeServerUrl(readFile(dataDir + "/server.txt"));
-    if (!saved.empty()) return saved;
-    std::string bundled = normalizeServerUrl(readFile(baseAssets + "/server.txt"));
-    if (!bundled.empty()) return bundled;
-    return "http://192.168.1.2:8765";
+    (void)baseAssets;
+    (void)dataDir;
+    return HB_STORE_FIXED_SERVER_URL;
 }
 
 inline std::string urlHostLabel(const std::string& url) {
@@ -994,8 +1008,12 @@ inline std::vector<Game> loadCatalog(const std::string& s) {
     return v;
 }
 
-inline std::string buildLoginJson(const std::string& username, const std::string& password) {
-    return "{\"username\":\"" + jsonEscape(username) + "\",\"password\":\"" + jsonEscape(password) + "\"}";
+inline std::string buildLoginJson(const std::string& username, const std::string& password,
+                                  const std::string& deviceId = "") {
+    std::string out = "{\"username\":\"" + jsonEscape(username) + "\",\"password\":\"" + jsonEscape(password) + "\"";
+    if (!deviceId.empty()) out += ",\"device_id\":\"" + jsonEscape(deviceId) + "\"";
+    out += "}";
+    return out;
 }
 
 inline std::string parseApiErrorJson(const std::string& raw) {
@@ -1071,4 +1089,47 @@ inline AppSession loadAppSession(const std::string& raw) {
     if (f.size() >= 3) out.username = f[2];
     if (f.size() >= 4) out.displayName = f[3];
     return out;
+}
+
+inline std::string buildDeviceCodeRequestJson(const std::string& deviceId) {
+    if (deviceId.empty()) return "{}";
+    return "{\"device_id\":\"" + jsonEscape(deviceId) + "\"}";
+}
+
+inline bool parseDeviceCodeResponseJson(const std::string& raw, DeviceCodeResponse& out, std::string& errOut) {
+    errOut.clear();
+    MiniJson::Value root;
+    if (!MiniJson::parse(raw, root) || root.type != MiniJson::Value::Object) {
+        errOut = "Resposta de código inválida";
+        return false;
+    }
+    out = DeviceCodeResponse();
+    out.code = firstJsonString(root, {"code"});
+    out.rawCode = firstJsonString(root, {"raw_code", "rawCode"});
+    out.deviceId = firstJsonString(root, {"device_id", "deviceId"});
+    if (auto* v = root.get("expires_in")) out.expiresIn = (int)v->asInt(900);
+    if (out.code.empty()) {
+        std::string apiErr = firstJsonString(root, {"error", "message"});
+        errOut = apiErr.empty() ? "Não foi possível gerar o código" : apiErr;
+        return false;
+    }
+    return true;
+}
+
+inline bool parseDeviceCodePollJson(const std::string& raw, DeviceCodePollResult& out) {
+    out = DeviceCodePollResult();
+    MiniJson::Value root;
+    if (!MiniJson::parse(raw, root) || root.type != MiniJson::Value::Object) return false;
+    out.status = firstJsonString(root, {"status"});
+    out.error = firstJsonString(root, {"error", "message"});
+    if (auto* v = root.get("expires_in")) out.expiresIn = (int)v->asInt(0);
+    if (out.status == "authorized") {
+        std::string err;
+        if (!parseAppLoginJson(raw, out.session, err)) {
+            out.status = "expired";
+            out.error = err;
+            return false;
+        }
+    }
+    return !out.status.empty();
 }

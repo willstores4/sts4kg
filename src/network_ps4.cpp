@@ -14,6 +14,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include "../build/trusted_roots.h"
 
@@ -26,34 +27,7 @@ static int pool = -1, ssl = -1, http = -1, caLoadResult = -1;
 static pthread_mutex_t initMutex = PTHREAD_MUTEX_INITIALIZER;
 
 void portalNetworkTrace(const char* format, ...) {
-    char message[768];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(message, sizeof message, format, args);
-    va_end(args);
-#ifndef PORTAL_HOST
-    char line[896];
-    int n = snprintf(line, sizeof line, "[NETWORK 1.0][pid %d][%lld] %s\n", getpid(), (long long)time(0), message);
-    if (n <= 0) return;
-    size_t size = (size_t)n < sizeof line ? (size_t)n : sizeof line - 1;
-    const char* root = hbStoreDataRoot();
-    char path[128];
-    snprintf(path, sizeof path, "%s/network.log", root);
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    if (fd < 0) {
-        snprintf(path, sizeof path, "/user%s/network.log", root);
-        fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
-    }
-    if (fd >= 0) {
-        size_t offset = 0;
-        while (offset < size) {
-            ssize_t wrote = write(fd, line + offset, size - offset);
-            if (wrote <= 0) break;
-            offset += (size_t)wrote;
-        }
-        close(fd);
-    }
-#endif
+    (void)format;
 }
 
 bool portalNetworkInit() {
@@ -94,6 +68,36 @@ bool portalNetworkInit() {
     return ok;
 }
 
+std::string portalNetworkDeviceId() {
+    static std::string cachedId;
+    if (!cachedId.empty()) return cachedId;
+    portalNetworkInit();
+    unsigned char mac[6] = {};
+    OrbisNetEtherAddr addr = {};
+    if (sceNetGetMacAddress(&addr, 0) >= 0) {
+        memcpy(mac, addr.data, 6);
+    }
+    bool nonZero = false;
+    for (int i = 0; i < 6; ++i) {
+        if (mac[i] != 0) nonZero = true;
+    }
+    if (!nonZero) {
+        OrbisNetCtlInfo ctlInfo = {};
+        if (sceNetCtlGetInfo(ORBIS_NET_CTL_INFO_ETHER_ADDR, &ctlInfo) >= 0) {
+            memcpy(mac, ctlInfo.ether_addr, 6);
+            for (int i = 0; i < 6; ++i) {
+                if (mac[i] != 0) nonZero = true;
+            }
+        }
+    }
+    if (!nonZero) return "";
+    char buf[32];
+    snprintf(buf, sizeof buf, "PS4-%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    cachedId = buf;
+    return cachedId;
+}
+
 static std::string networkHost(const std::string& url) {
     size_t p = url.compare(0, 8, "https://") == 0 ? 8 : url.compare(0, 7, "http://") == 0 ? 7 : 0;
     if (!p) return "invalid";
@@ -129,7 +133,7 @@ static std::string findResponseHeader(const std::string& allHeaders, const std::
 }
 
 static bool performHttp(bool isPost, const std::string& initial, const std::string& reqBody,
-                        const std::string& contentType, const std::string& authToken,
+                        const std::string& contentType, const std::string& authToken, const std::string& deviceId,
                         std::string* outMemory, size_t cap, bool captureErrorBody,
                         const std::string& referer, const std::string& rangeHeader, bool capPartialOk,
                         const std::string& destFile, bool appendMode, uint64_t expectedBytes,
@@ -175,6 +179,7 @@ static bool performHttp(bool isPost, const std::string& initial, const std::stri
                 sceHttpAddRequestHeader(r, "Accept-Encoding", "identity", 0);
                 if (!referer.empty()) sceHttpAddRequestHeader(r, "Referer", referer.c_str(), 0);
                 if (!authToken.empty()) sceHttpAddRequestHeader(r, "X-App-Token", authToken.c_str(), 0);
+                if (!deviceId.empty()) sceHttpAddRequestHeader(r, "X-Device-Id", deviceId.c_str(), 0);
                 if (!contentType.empty()) sceHttpAddRequestHeader(r, "Content-Type", contentType.c_str(), 0);
                 if (!rangeHeader.empty()) sceHttpAddRequestHeader(r, "Range", rangeHeader.c_str(), 0);
                 sendResult = sceHttpSendRequest(
@@ -361,34 +366,34 @@ static bool performHttp(bool isPost, const std::string& initial, const std::stri
 
 bool portalNetworkFetch(const std::string& initial, std::string& out, size_t cap, const std::string& referer) {
     std::string err;
-    return performHttp(false, initial, "", "", "", &out, cap, false, referer, "", false, "", false, 0, nullptr, nullptr, nullptr, nullptr, err);
+    return performHttp(false, initial, "", "", "", "", &out, cap, false, referer, "", false, "", false, 0, nullptr, nullptr, nullptr, nullptr, err);
 }
 
 bool portalNetworkFetchAuth(const std::string& url, const std::string& authToken, std::string& out, size_t cap,
                             int& httpCodeOut, std::string& error) {
-    return performHttp(false, url, "", "", authToken, &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
+    return performHttp(false, url, "", "", authToken, portalNetworkDeviceId(), &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
 }
 
 bool portalNetworkPostJson(const std::string& url, const std::string& jsonBody, const std::string& authToken,
                            std::string& out, size_t cap, int& httpCodeOut, std::string& error) {
-    return performHttp(true, url, jsonBody, "application/json; charset=utf-8", authToken, &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
+    return performHttp(true, url, jsonBody, "application/json; charset=utf-8", authToken, portalNetworkDeviceId(), &out, cap, true, "", "", false, "", false, 0, nullptr, nullptr, nullptr, &httpCodeOut, error);
 }
 
 bool portalNetworkFetchRange(const std::string& url, std::string& out, uint64_t offset, size_t length, std::string& error) {
     std::string range = "bytes=" + std::to_string(offset) + "-" + std::to_string(offset + length - 1);
-    return performHttp(false, url, "", "", "", &out, length, false, "", range, true, "", false, 0, nullptr, nullptr, nullptr, nullptr, error);
+    return performHttp(false, url, "", "", "", "", &out, length, false, "", range, true, "", false, 0, nullptr, nullptr, nullptr, nullptr, error);
 }
 
 bool portalNetworkDownloadFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                                PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                                std::string& error) {
-    return performHttp(false, url, "", "", "", nullptr, 0, false, "", "", false, destPath, false, expectedBytes, progressCb, stopCb, user, nullptr, error);
+    return performHttp(false, url, "", "", "", "", nullptr, 0, false, "", "", false, destPath, false, expectedBytes, progressCb, stopCb, user, nullptr, error);
 }
 
 bool portalNetworkAppendFile(const std::string& url, const std::string& destPath, uint64_t expectedBytes,
                              PortalDownloadProgressFn progressCb, PortalDownloadStopFn stopCb, void* user,
                              std::string& error) {
-    return performHttp(false, url, "", "", "", nullptr, 0, false, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, nullptr, error);
+    return performHttp(false, url, "", "", "", "", nullptr, 0, false, "", "", false, destPath, true, expectedBytes, progressCb, stopCb, user, nullptr, error);
 }
 
 extern "C" int nbNetSocket(const char*, int, int, int) __asm__("sceNetSocket");

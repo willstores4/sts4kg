@@ -137,10 +137,10 @@ int main() {
     ui.action(BACK);
     assert(!ui.detail);
 
-    // Servidor config
+    // Servidor config (IP fixo em HB_STORE_FIXED_SERVER_URL sem gravação de server.txt)
+    assert(readDefaultServerUrl("assets", "build/test-data") == "http://192.168.1.8:8765");
     ui.action(SERVER_CONFIG);
     assert(ui.serverPicker);
-    ui.action(DOWN);
     ui.action(CONFIRM);
     assert(ui.serverSyncRequest && !ui.serverPicker);
 
@@ -435,55 +435,90 @@ int main() {
            sessRound.username == sess.username && sessRound.displayName == sess.displayName);
 
     assert(buildLoginJson("a\"b", "p\\w") == "{\"username\":\"a\\\"b\",\"password\":\"p\\\\w\"}");
+    assert(buildLoginJson("u1", "pw", "PS4-AA:BB:CC:11:22:33") ==
+           "{\"username\":\"u1\",\"password\":\"pw\",\"device_id\":\"PS4-AA:BB:CC:11:22:33\"}");
     assert(parseApiErrorJson(R"({"error":"Usuário bloqueado"})") == "Usuário bloqueado");
 
-    // Testar fluxo da tela de login na UI e teclado fallback com maiúsculas
-    ui.loginScreen = true;
-    ui.loginField = 0;
-    ui.loginUser.clear();
-    ui.loginPass.clear();
-    ui.action(CONFIRM); // abre teclado para usuário
-    assert(ui.keyboard && ui.kbTarget == UI::KbLoginUser);
-    ui.action(FAVORITE); // ativa Shift (maiúsculas/símbolos)
+    // Testar helpers JSON de código de ativação por dispositivo
+    assert(buildDeviceCodeRequestJson("PS4-AA:BB:CC:11:22:33") ==
+           "{\"device_id\":\"PS4-AA:BB:CC:11:22:33\"}");
+
+    DeviceCodeResponse dcr;
+    std::string dcrErr;
+    assert(parseDeviceCodeResponseJson(
+        R"({"ok":true,"code":"AB7-K4M","raw_code":"AB7K4M","device_id":"PS4-AA:BB:CC:11:22:33","expires_in":900})",
+        dcr, dcrErr));
+    assert(dcr.code == "AB7-K4M" && dcr.rawCode == "AB7K4M" && dcr.deviceId == "PS4-AA:BB:CC:11:22:33" && dcr.expiresIn == 900);
+
+    DeviceCodePollResult pollPending;
+    assert(parseDeviceCodePollJson(R"({"ok":true,"status":"pending","expires_in":600})", pollPending));
+    assert(pollPending.status == "pending" && pollPending.expiresIn == 600 && pollPending.session.token.empty());
+
+    DeviceCodePollResult pollAuth;
+    assert(parseDeviceCodePollJson(
+        R"({"ok":true,"status":"authorized","token":"tok_dev_999","user":{"username":"ps4-ab7k","display_name":"PS4 Sala"}})",
+        pollAuth));
+    assert(pollAuth.status == "authorized" && pollAuth.session.token == "tok_dev_999" &&
+           pollAuth.session.username == "ps4-ab7k" && pollAuth.session.displayName == "PS4 Sala");
+
+    DeviceCodePollResult pollRej;
+    assert(parseDeviceCodePollJson(R"({"ok":false,"status":"rejected","error":"Código recusado no painel."})", pollRej));
+    assert(pollRej.status == "rejected" && pollRej.error == "Código recusado no painel.");
+
+    // Testar teclado fallback com maiúsculas na busca
+    ui.action(SEARCH);
+    assert(ui.keyboard && ui.kbTarget == UI::KbSearch);
+    ui.action(FAVORITE); // Shift ON
     assert(ui.kbShift);
     ui.key = 0; // 'A'
     ui.action(CONFIRM);
     ui.key = 44; // OK
     ui.action(CONFIRM);
-    assert(!ui.keyboard && ui.loginUser == "A" && ui.loginField == 1);
+    assert(!ui.keyboard && ui.query == "A");
+    ui.action(BACK);
+    assert(ui.query.empty());
 
-    ui.action(CONFIRM); // abre teclado para senha
-    assert(ui.keyboard && ui.kbTarget == UI::KbLoginPass);
-    ui.key = 1; // 'b'
-    ui.action(CONFIRM);
-    ui.key = 44; // OK
-    ui.action(CONFIRM);
-    assert(!ui.keyboard && ui.loginPass == "b" && ui.loginField == 2);
-
-    ui.loginError = "Erro anterior";
+    // Testar fluxo da tela de autorização por código na UI
+    ui.loginScreen = true;
+    ui.deviceId = "PS4-AA:BB:CC:11:22:33";
+    ui.activationCode = "AB7-K4M";
+    ui.activationExpiresIn = 900;
+    ui.activationError = "Erro anterior";
+    ui.activationField = 0;
+    assert(ui.hasSpinnerActivity());
     ui.draw();
     assert(ui.c.pixels.size() == 1920 * 1080);
 
-    ui.action(CONFIRM); // botão Entrar
-    assert(ui.loginSubmitRequest && ui.loginSubmitting && ui.hasSpinnerActivity());
-    ui.loginSubmitRequest = false;
-    ui.loginSubmitting = false;
+    ui.action(REFRESH); // OPTIONS -> verificar agora
+    assert(ui.pollCodeSignal && ui.serverSyncRequest);
+    ui.pollCodeSignal = false;
+    ui.serverSyncRequest = false;
 
-    // Login bem-sucedido e opção de sair da conta no menu Servidor
+    ui.action(CONFIRM); // botão Gerar Novo Código
+    assert(ui.requestNewCodeSignal && ui.codeRequesting && ui.activationError.empty());
+    ui.requestNewCodeSignal = false;
+    ui.codeRequesting = false;
+
+    ui.action(RIGHT); // move para L3 Opções / Sync
+    assert(ui.activationField == 1);
+    ui.action(CONFIRM);
+    assert(ui.serverPicker);
+    ui.action(BACK);
+    assert(!ui.serverPicker);
+
+    // Autorização concluída e opção de sair/desvincular no menu Servidor
     ui.loginScreen = false;
-    ui.loggedUsername = "cliente01";
-    ui.loggedDisplayName = "Cliente Um";
+    ui.loggedUsername = "ps4-ab7k";
+    ui.loggedDisplayName = "PS4 Sala";
     ui.draw();
     ui.action(SERVER_CONFIG);
     assert(ui.serverPicker);
     ui.draw();
-    ui.action(DOWN); // 1 Sincronizar
-    ui.action(DOWN); // 2 Restaurar padrão
-    ui.action(DOWN); // 3 Trocar usuário / Sair da conta
+    ui.action(DOWN); // 1 Desvincular / Sair da conta
     ui.action(CONFIRM);
     assert(ui.logoutRequest && !ui.serverPicker);
     ui.logoutRequest = false;
 
-    std::cout << "Catalog JSON parser, round-trip, auth flow, login screen and UI rendering passed.\n";
+    std::cout << "Catalog JSON parser, round-trip, device code activation flow and UI rendering passed.\n";
     return 0;
 }

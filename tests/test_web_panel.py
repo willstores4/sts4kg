@@ -855,7 +855,12 @@ class WebPanelTests(unittest.TestCase):
         status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "errada"})
         self.assertEqual(status, 401)
 
-        status, _, login_raw = self.request("POST", "/api/app/login", {"username": "Cliente01", "password": "senha123"})
+        dev1 = "PS4-AA:BB:CC:00:00:01"
+        status, _, login_raw = self.request("POST", "/api/app/login", {
+            "username": "Cliente01",
+            "password": "senha123",
+            "device_id": dev1,
+        })
         self.assertEqual(status, 200)
         login_data = json.loads(login_raw)
         tok = login_data["token"]
@@ -863,12 +868,12 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(login_data["user"]["display_name"], "Cliente Um")
 
         # auth-info com X-App-Token valida sessão
-        status, _, auth_ok_raw = self.request("GET", "/api/app/auth-info", headers={"X-App-Token": tok})
+        status, _, auth_ok_raw = self.request("GET", "/api/app/auth-info", headers={"X-App-Token": tok, "X-Device-Id": dev1})
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(auth_ok_raw)["authenticated"])
 
         # Catálogo retorna token embutido nas URLs internas para BGFT/PS4
-        status, _, cat_raw = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok})
+        status, _, cat_raw = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok, "X-Device-Id": dev1})
         self.assertEqual(status, 200)
         cat = json.loads(cat_raw)
         exported_pkg_url = cat["items"][0]["pkg_url"]
@@ -882,25 +887,29 @@ class WebPanelTests(unittest.TestCase):
         status, _, rev_raw = self.request("POST", f"/api/admin/users/{uid}/revoke")
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(rev_raw)["revoked"], 1)
-        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok})
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok, "X-Device-Id": dev1})
         self.assertEqual(status, 401)
 
         # 6. Bloqueio e expiração impedem login e invalidam sessões
-        status, _, login_raw2 = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        status, _, login_raw2 = self.request("POST", "/api/app/login", {
+            "username": "cliente01",
+            "password": "senha123",
+            "device_id": dev1,
+        })
         self.assertEqual(status, 200)
         tok2 = json.loads(login_raw2)["token"]
 
         status, _, _ = self.request("PUT", f"/api/admin/users/{uid}", {"active": False})
         self.assertEqual(status, 200)
-        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok2})
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok2, "X-Device-Id": dev1})
         self.assertEqual(status, 401)
-        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123", "device_id": dev1})
         self.assertEqual(status, 403)
 
         # Reativa com data expirada
         status, _, _ = self.request("PUT", f"/api/admin/users/{uid}", {"active": True, "expires_at": 1000})
         self.assertEqual(status, 200)
-        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123"})
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "cliente01", "password": "senha123", "device_id": dev1})
         self.assertEqual(status, 403)
 
         # 7. Modo '0' libera catálogo mesmo com usuários; excluir todos os usuários libera em modo 'auto'
@@ -928,6 +937,7 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
 
     def test_10_session_limit_per_user_and_policy(self):
+        dev1 = "PS4-AA:BB:CC:11:22:33"
         # 1. Cria usuário limitado a 1 sessão (política padrão 'block')
         status, _, u1_raw = self.request("POST", "/api/admin/users", {
             "username": "limitado",
@@ -940,24 +950,24 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(u1["effective_max_sessions"], 1)
 
         # Primeiro login ok
-        status, _, l1_raw = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        status, _, l1_raw = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123", "device_id": dev1})
         self.assertEqual(status, 200)
         tok1 = json.loads(l1_raw)["token"]
         self.assertEqual(json.loads(l1_raw)["user"]["max_sessions"], 1)
 
         # Segundo login bloqueado (403)
-        status, _, l2_err = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        status, _, l2_err = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123", "device_id": dev1})
         self.assertEqual(status, 403)
         self.assertIn("Limite de sessões", json.loads(l2_err)["error"])
 
         # Sessão 1 segue válida
-        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok1})
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok1, "X-Device-Id": dev1})
         self.assertEqual(status, 200)
 
         # Logout da sessão 1 libera novo login
         status, _, _ = self.request("POST", "/api/app/logout", headers={"X-App-Token": tok1})
         self.assertEqual(status, 200)
-        status, _, l2_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        status, _, l2_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123", "device_id": dev1})
         self.assertEqual(status, 200)
         tok2 = json.loads(l2_ok)["token"]
 
@@ -970,13 +980,13 @@ class WebPanelTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
 
-        status, _, l3_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123"})
+        status, _, l3_ok = self.request("POST", "/api/app/login", {"username": "limitado", "password": "123", "device_id": dev1})
         self.assertEqual(status, 200)
         tok3 = json.loads(l3_ok)["token"]
 
-        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok2})
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok2, "X-Device-Id": dev1})
         self.assertEqual(status, 401)
-        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok3})
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok3, "X-Device-Id": dev1})
         self.assertEqual(status, 200)
 
         # 3. Usuário usando padrão global (2 sessões) vs usuário com -1 (ilimitado)
@@ -997,9 +1007,9 @@ class WebPanelTests(unittest.TestCase):
         })
         self.assertEqual(status, 200)
 
-        t_a = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})[2])["token"]
-        t_b = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})[2])["token"]
-        status, _, _ = self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123"})
+        t_a = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123", "device_id": dev1})[2])["token"]
+        t_b = json.loads(self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123", "device_id": dev1})[2])["token"]
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "padrao_global", "password": "123", "device_id": dev1})
         self.assertEqual(status, 403)
 
         # Reduzir limite individual do usuário para 1 derruba excesso e preserva sessão mais recente
@@ -1009,9 +1019,9 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         u_now = [x for x in json.loads(st_raw)["users"] if x["id"] == u_def["id"]][0]
         self.assertEqual(u_now["active_sessions"], 1)
-        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_a})
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_a, "X-Device-Id": dev1})
         self.assertEqual(status, 401)
-        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_b})
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": t_b, "X-Device-Id": dev1})
         self.assertEqual(status, 200)
 
         # Usuário com max_sessions = -1 ignora limite global (2) e permite 3+ sessões
@@ -1023,8 +1033,187 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 201)
         self.assertEqual(json.loads(u_unlim_raw)["user"]["effective_max_sessions"], 0)
         for _ in range(3):
-            st, _, _ = self.request("POST", "/api/app/login", {"username": "vip_ilimitado", "password": "123"})
+            st, _, _ = self.request("POST", "/api/app/login", {"username": "vip_ilimitado", "password": "123", "device_id": dev1})
             self.assertEqual(st, 200)
+
+    def test_11_device_binding_anti_sharing(self):
+        ps4_a = "PS4-11:22:33:44:55:66"
+        ps4_b = "PS4-AA:BB:CC:DD:EE:FF"
+
+        # 1. Por padrão, usuário nasce com vínculo automático ativado
+        status, _, u_raw = self.request("POST", "/api/admin/users", {
+            "username": "vinculado",
+            "password": "123",
+        })
+        self.assertEqual(status, 201)
+        u = json.loads(u_raw)["user"]
+        uid = u["id"]
+        self.assertTrue(u["effective_bind_device"])
+        self.assertEqual(u["bound_device_id"], "")
+
+        # Login sem device_id é bloqueado
+        status, _, err_no_dev = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+        })
+        self.assertEqual(status, 403)
+        self.assertIn("Identificação do PS4", json.loads(err_no_dev)["error"])
+
+        # 2. Console A entra primeiro e fica vinculado permanentemente
+        status, _, la_raw = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+            "device_id": ps4_a,
+        })
+        self.assertEqual(status, 200)
+        la = json.loads(la_raw)
+        tok_a = la["token"]
+        self.assertEqual(la["user"]["bound_device_id"], ps4_a)
+
+        # Mesmo se Console A fizer logout, Console B NÃO consegue usar o login alternadamente
+        status, _, _ = self.request("POST", "/api/app/logout", headers={"X-App-Token": tok_a})
+        self.assertEqual(status, 200)
+
+        status, _, lb_err = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+            "device_id": ps4_b,
+        })
+        self.assertEqual(status, 403)
+        self.assertIn("vinculada a outro PS4", json.loads(lb_err)["error"])
+        self.assertIn(ps4_a, json.loads(lb_err)["error"])
+
+        # Console A continua conseguindo logar novamente sem problemas
+        status, _, la2_raw = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+            "device_id": ps4_a,
+        })
+        self.assertEqual(status, 200)
+        tok_a2 = json.loads(la2_raw)["token"]
+
+        # Token copiado de Console A usado no Console B (outro X-Device-Id) é rejeitado
+        # sem derrubar o Console A legítimo
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok_a2, "X-Device-Id": ps4_b})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok_a2, "X-Device-Id": ps4_a})
+        self.assertEqual(status, 200)
+
+        # 3. Admin desvincula PS4: sessão antiga cai e Console B pode assumir a conta
+        status, _, unbind_raw = self.request("POST", f"/api/admin/users/{uid}/unbind")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(unbind_raw)["user"]["bound_device_id"], "")
+
+        status, _, _ = self.request("GET", "/api/app/me", headers={"X-App-Token": tok_a2, "X-Device-Id": ps4_a})
+        self.assertEqual(status, 401)
+
+        status, _, lb_ok = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+            "device_id": ps4_b,
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(lb_ok)["user"]["bound_device_id"], ps4_b)
+
+        # Agora Console A passa a ser bloqueado
+        status, _, _ = self.request("POST", "/api/app/login", {
+            "username": "vinculado",
+            "password": "123",
+            "device_id": ps4_a,
+        })
+        self.assertEqual(status, 403)
+
+        # 4. Usuário com bind_device = 0 permite alternar aparelhos livremente
+        status, _, uf_raw = self.request("POST", "/api/admin/users", {
+            "username": "livre",
+            "password": "123",
+            "bind_device": 0,
+        })
+        self.assertEqual(status, 201)
+        self.assertFalse(json.loads(uf_raw)["user"]["effective_bind_device"])
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "livre", "password": "123", "device_id": ps4_a})
+        self.assertEqual(status, 200)
+        status, _, _ = self.request("POST", "/api/app/login", {"username": "livre", "password": "123", "device_id": ps4_b})
+        self.assertEqual(status, 200)
+
+    def test_12_device_code_activation_flow(self):
+        ps4_1 = "PS4-CC:DD:EE:11:22:33"
+        ps4_2 = "PS4-99:88:77:66:55:44"
+
+        # 1. Ativa exigência de autorização no PS4
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "Teste",
+            "require_app_login": "1",
+        })
+        self.assertEqual(status, 200)
+
+        # 2. PS4_1 solicita código de ativação
+        status, _, req_raw = self.request("POST", "/api/app/device-code/request", {
+            "device_id": ps4_1,
+        })
+        self.assertEqual(status, 201)
+        req_data = json.loads(req_raw)
+        disp_code = req_data["code"]
+        raw_code = req_data["raw_code"]
+        self.assertIn("-", disp_code)
+        self.assertEqual(len(raw_code), 6)
+
+        # Outro console NÃO pode consultar ou roubar o código do PS4_1
+        status, _, _ = self.request("GET", f"/api/app/device-code/poll?code={disp_code}", headers={"X-Device-Id": ps4_2})
+        self.assertEqual(status, 403)
+
+        # PS4_1 consulta enquanto pendente
+        status, _, poll_p = self.request("GET", f"/api/app/device-code/poll?code={disp_code}", headers={"X-Device-Id": ps4_1})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(poll_p)["status"], "pending")
+
+        # Painel lista solicitações pendentes
+        status, _, pend_raw = self.request("GET", "/api/admin/device-codes")
+        self.assertEqual(status, 200)
+        codes_list = json.loads(pend_raw)["codes"]
+        self.assertEqual(len(codes_list), 1)
+        self.assertEqual(codes_list[0]["device_id"], ps4_1)
+
+        # 3. Admin autoriza o código criando cliente vinculado ao PS4_1
+        status, _, auth_raw = self.request("POST", f"/api/admin/device-codes/{raw_code}/authorize", {
+            "display_name": "Cliente Lucas",
+            "expires_days": 30,
+            "notes": "PS4 Pro Quarto",
+        })
+        self.assertEqual(status, 200)
+        auth_user = json.loads(auth_raw)["user"]
+        self.assertEqual(auth_user["bound_device_id"], ps4_1)
+        self.assertGreater(auth_user["expires_at"], 0)
+
+        # PS4_1 faz polling e recebe o token definitivo
+        status, _, poll_ok = self.request("GET", f"/api/app/device-code/poll?code={disp_code}", headers={"X-Device-Id": ps4_1})
+        self.assertEqual(status, 200)
+        p_ok = json.loads(poll_ok)
+        self.assertEqual(p_ok["status"], "authorized")
+        tok = p_ok["token"]
+        self.assertTrue(tok)
+        self.assertEqual(p_ok["user"]["display_name"], "Cliente Lucas")
+
+        # Replay do mesmo código consumido falha (410)
+        status, _, _ = self.request("GET", f"/api/app/device-code/poll?code={disp_code}", headers={"X-Device-Id": ps4_1})
+        self.assertEqual(status, 410)
+
+        # Token libera catálogo apenas para PS4_1
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok, "X-Device-Id": ps4_2})
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/catalog.json", headers={"X-App-Token": tok, "X-Device-Id": ps4_1})
+        self.assertEqual(status, 200)
+
+        # 4. Novo código do PS4_1 detecta usuário já vinculado e recusa no PS4_2 funciona
+        status, _, req2_raw = self.request("POST", "/api/app/device-code/request", {"device_id": ps4_2})
+        self.assertEqual(status, 201)
+        code2 = json.loads(req2_raw)["raw_code"]
+        status, _, _ = self.request("POST", f"/api/admin/device-codes/{code2}/reject")
+        self.assertEqual(status, 200)
+        status, _, rej_poll = self.request("GET", f"/api/app/device-code/poll?code={code2}", headers={"X-Device-Id": ps4_2})
+        self.assertEqual(status, 403)
+        self.assertEqual(json.loads(rej_poll)["status"], "rejected")
 
 
 if __name__ == "__main__":
