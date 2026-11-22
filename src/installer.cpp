@@ -116,8 +116,8 @@ PackageInstaller::PackageInstaller(std::string rootDir, InstallBackend backendAp
     : root(std::move(rootDir)), backend(backendApi) {
     pthread_mutex_init(&mutex, nullptr);
     pthread_cond_init(&changed, nullptr);
-    mkdir(root.c_str(), 0777);
-    mkdir((root + "/downloads").c_str(), 0777);
+    ensureDirectoryTree(root);
+    ensureDirectoryTree(root + "/downloads");
 
     std::string raw = loadQueue(root + "/tasks.tsv");
     size_t p = 0;

@@ -3,11 +3,13 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <errno.h>
 #include <initializer_list>
 #include <map>
 #include <set>
 #include <stdint.h>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 struct Category {
@@ -19,6 +21,7 @@ struct Category {
 struct AppAuthInfo {
     bool loginRequired = false;
     bool authenticated = true;
+    long long catalogVersion = 0;
     std::string storeName;
     std::string storeSubtitle;
     std::string username;
@@ -148,12 +151,38 @@ inline std::string readFile(const std::string& p) {
     return s;
 }
 
+inline bool ensureDirectoryTree(const std::string& dir) {
+    if (dir.empty()) return false;
+    struct stat st;
+    if (stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) return true;
+    size_t start = (dir[0] == '/') ? 1 : 0;
+    for (size_t i = start; i <= dir.size(); ++i) {
+        if (i < dir.size() && dir[i] != '/') continue;
+        std::string sub = dir.substr(0, i);
+        if (sub.empty() || sub == "." || sub == "..") continue;
+        if (stat(sub.c_str(), &st) == 0) {
+            if (S_ISDIR(st.st_mode)) continue;
+            return false;
+        }
+        if (mkdir(sub.c_str(), 0777) != 0 && errno != EEXIST) {
+            if (stat(sub.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+        }
+    }
+    return stat(dir.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 inline bool writeFile(const std::string& p, const std::string& s) {
-    FILE* f = fopen((p + ".tmp").c_str(), "wb");
+    auto slash = p.rfind('/');
+    if (slash != std::string::npos && slash > 0) {
+        ensureDirectoryTree(p.substr(0, slash));
+    }
+    std::string tmp = p + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
     if (!f) return false;
     bool ok = fwrite(s.data(), 1, s.size(), f) == s.size();
     if (fclose(f)) ok = false;
-    if (ok) ok = rename((p + ".tmp").c_str(), p.c_str()) == 0;
+    if (ok) ok = rename(tmp.c_str(), p.c_str()) == 0;
+    if (!ok) std::remove(tmp.c_str());
     return ok;
 }
 
@@ -1029,6 +1058,7 @@ inline bool parseAppAuthInfoJson(const std::string& raw, AppAuthInfo& out) {
     if (auto* lr = root.get("login_required")) out.loginRequired = lr->asBool();
     if (auto* au = root.get("authenticated")) out.authenticated = au->asBool();
     else out.authenticated = !out.loginRequired;
+    if (auto* cv = root.get("catalog_version")) out.catalogVersion = cv->asInt();
     out.storeName = firstJsonString(root, {"store_name", "storeName"});
     out.storeSubtitle = firstJsonString(root, {"store_subtitle", "storeSubtitle"});
     if (auto* u = root.get("user")) {

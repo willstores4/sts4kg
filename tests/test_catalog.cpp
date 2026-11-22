@@ -418,11 +418,12 @@ int main() {
     assert(parseAppAuthInfoJson(R"({
         "login_required": true,
         "authenticated": false,
+        "catalog_version": 987654,
         "store_name": "WILLGAME Store",
         "store_subtitle": "Painel VIP",
         "user": {"username": "cliente01", "display_name": "Cliente Um"}
     })", authInfo));
-    assert(authInfo.loginRequired && !authInfo.authenticated);
+    assert(authInfo.loginRequired && !authInfo.authenticated && authInfo.catalogVersion == 987654);
     assert(authInfo.storeName == "WILLGAME Store" && authInfo.username == "cliente01" && authInfo.displayName == "Cliente Um");
 
     AppSession sess;
@@ -430,9 +431,18 @@ int main() {
     assert(parseAppLoginJson(R"({"ok":true,"token":"tok_abc123","user":{"username":"u1","display_name":"Usuario 1"}})", sess, loginParseErr));
     assert(sess.token == "tok_abc123" && sess.username == "u1" && sess.displayName == "Usuario 1");
     sess.serverUrl = "http://192.168.1.2:8765";
-    AppSession sessRound = loadAppSession(serializeAppSession(sess));
+    std::string deepRoot = "build/test-deep/a/b/c";
+    assert(ensureDirectoryTree(deepRoot + "/covers"));
+    assert(writeFile(deepRoot + "/session.tsv", serializeAppSession(sess)));
+    AppSession sessRound = loadAppSession(readFile(deepRoot + "/session.tsv"));
     assert(sessRound.serverUrl == sess.serverUrl && sessRound.token == sess.token &&
            sessRound.username == sess.username && sessRound.displayName == sess.displayName);
+    unlink((deepRoot + "/session.tsv").c_str());
+    rmdir((deepRoot + "/covers").c_str());
+    rmdir(deepRoot.c_str());
+    rmdir("build/test-deep/a/b");
+    rmdir("build/test-deep/a");
+    rmdir("build/test-deep");
 
     assert(buildLoginJson("a\"b", "p\\w") == "{\"username\":\"a\\\"b\",\"password\":\"p\\\\w\"}");
     assert(buildLoginJson("u1", "pw", "PS4-AA:BB:CC:11:22:33") ==

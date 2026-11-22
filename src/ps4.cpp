@@ -23,6 +23,7 @@ static bool syncWorking = false, syncReady = false;
 static std::string syncStatusMsg, syncServerUrl, syncToken;
 static CatalogData syncedCatalog;
 static bool clearCoversOnPublish = false;
+static long long syncCatalogVersion = 0;
 
 static bool syncAuthRequired = false, syncOfflineRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
 static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
@@ -36,6 +37,7 @@ static std::string codePollServer, codePollCode;
 static DeviceCodePollResult codePollResult;
 
 static bool connCheckWorking = false, connCheckDone = false, connCheckReachable = true, connCheckAuthValid = true;
+static long long connCheckCatalogVer = 0;
 static std::string connCheckServer, connCheckToken, connCheckErrMsg;
 
 static void setSyncStatus(const std::string& s) {
@@ -80,6 +82,7 @@ static void* syncThread(void*) {
                 pthread_mutex_lock(&syncLock);
                 if (!ai.storeName.empty()) syncStoreName = ai.storeName;
                 if (!ai.storeSubtitle.empty()) syncStoreSubtitle = ai.storeSubtitle;
+                if (ai.catalogVersion > 0) syncCatalogVersion = ai.catalogVersion;
                 if (ai.loginRequired && !ai.authenticated) {
                     syncAuthRequired = true;
                     syncClearSession = !token.empty();
@@ -137,7 +140,7 @@ static void* syncThread(void*) {
     }
 
     std::string coversDir = DATA + "/covers";
-    mkdir(coversDir.c_str(), 0777);
+    ensureDirectoryTree(coversDir);
     cleanStaleCovers(coversDir, parsed.items);
 
     pthread_mutex_lock(&syncLock);
@@ -148,18 +151,19 @@ static void* syncThread(void*) {
     pthread_mutex_unlock(&syncLock);
 
     int fetchedCovers = 0;
+    bool changedCovers = false;
     for (const auto& g : parsed.items) {
         std::string imgPath = coversDir + "/" + std::to_string(g.id) + ".jpg";
         std::string stampPath = coversDir + "/" + std::to_string(g.id) + ".stamp";
         if (!isHttpUrl(g.image)) {
-            unlink(imgPath.c_str());
+            if (unlink(imgPath.c_str()) == 0) changedCovers = true;
             unlink(stampPath.c_str());
             continue;
         }
         std::string expectedStamp = g.image + "|" + std::to_string(g.updatedAt);
 
         struct stat st;
-        if (stat(imgPath.c_str(), &st) == 0 && readFile(stampPath) == expectedStamp) {
+        if (stat(imgPath.c_str(), &st) == 0 && st.st_size > 0 && readFile(stampPath) == expectedStamp) {
             continue;
         }
 
@@ -167,22 +171,24 @@ static void* syncThread(void*) {
         if (portalNetworkFetch(g.image, bytes, 4 * 1024 * 1024)) {
             int w = 0, h = 0, c = 0;
             if (stbi_info_from_memory((const unsigned char*)bytes.data(), (int)bytes.size(), &w, &h, &c) &&
-                w > 0 && h > 0 && w <= 2048 && h <= 2048) {
-                writeFile(imgPath, bytes);
-                writeFile(stampPath, expectedStamp);
-                ++fetchedCovers;
-                if (fetchedCovers % 4 == 0) {
-                    pthread_mutex_lock(&syncLock);
-                    clearCoversOnPublish = true;
-                    syncStatusMsg = "Sincronizado (" + std::to_string(parsed.items.size()) + " homebrews) | Capas atualizadas";
-                    pthread_mutex_unlock(&syncLock);
+                w > 0 && h > 0 && w <= 4096 && h <= 4096) {
+                if (writeFile(imgPath, bytes)) {
+                    writeFile(stampPath, expectedStamp);
+                    ++fetchedCovers;
+                    changedCovers = true;
+                    if (fetchedCovers % 4 == 0) {
+                        pthread_mutex_lock(&syncLock);
+                        clearCoversOnPublish = true;
+                        syncStatusMsg = "Sincronizado (" + std::to_string(parsed.items.size()) + " homebrews) | Capas atualizadas";
+                        pthread_mutex_unlock(&syncLock);
+                    }
                 }
             }
         }
     }
 
     pthread_mutex_lock(&syncLock);
-    if (fetchedCovers > 0) clearCoversOnPublish = true;
+    if (changedCovers) clearCoversOnPublish = true;
     syncStatusMsg = "Sincronizado (" + std::to_string(parsed.items.size()) + " itens)";
     syncWorking = false;
     pthread_mutex_unlock(&syncLock);
@@ -350,14 +356,18 @@ static void* connCheckThread(void*) {
 
     bool reachable = fetched || (authCode > 0);
     bool authValid = true;
+    long long ver = 0;
     std::string errMsg;
     if (!reachable) {
         errMsg = !authErr.empty() ? authErr : "Sem conexão com o servidor.";
     } else if (fetched) {
         AppAuthInfo ai;
-        if (parseAppAuthInfoJson(authBody, ai) && ai.loginRequired && !ai.authenticated) {
-            authValid = false;
-            errMsg = "Sessão expirada ou bloqueada. Autorize este console novamente.";
+        if (parseAppAuthInfoJson(authBody, ai)) {
+            ver = ai.catalogVersion;
+            if (ai.loginRequired && !ai.authenticated) {
+                authValid = false;
+                errMsg = "Sessão expirada ou bloqueada. Autorize este console novamente.";
+            }
         }
     }
 
@@ -366,6 +376,7 @@ static void* connCheckThread(void*) {
     connCheckDone = true;
     connCheckReachable = reachable;
     connCheckAuthValid = authValid;
+    connCheckCatalogVer = ver;
     connCheckErrMsg = errMsg;
     pthread_mutex_unlock(&syncLock);
     return nullptr;
@@ -423,9 +434,9 @@ static void startLogoutAsync(const std::string& serverUrl, const std::string& to
 
 int main() {
     DATA = hbStoreDataRoot();
-    mkdir(DATA.c_str(), 0777);
+    ensureDirectoryTree(DATA);
     if (!loadStartupModules()) return 1;
-    mkdir((DATA + "/covers").c_str(), 0777);
+    ensureDirectoryTree(DATA + "/covers");
 
     UI ui("/app0/assets", DATA);
     PackageInstaller installer(DATA, ps4InstallBackend());
@@ -475,6 +486,7 @@ int main() {
     int codePollFrameAccum = 0;
     int connCheckFrameAccum = 0;
     int offlineStreak = 0;
+    long long lastSyncedCatalogVer = 0;
 
     startSync(ui.serverUrl, activeToken);
 
@@ -828,10 +840,12 @@ int main() {
             clearCoversOnPublish = false;
             ui.dirty = true;
         }
+        bool triggerCatalogAutoSync = false;
         if (syncReady) {
             offlineWaitReconnect = false;
             offlineStreak = 0;
             syncOfflineRequired = false;
+            if (syncCatalogVersion > 0) lastSyncedCatalogVer = syncCatalogVersion;
             ui.storeName = syncedCatalog.storeName;
             ui.storeSubtitle = syncedCatalog.storeSubtitle;
             ui.categories = syncedCatalog.categories;
@@ -945,10 +959,18 @@ int main() {
                 ui.dirty = true;
             } else {
                 offlineStreak = 0;
+                if (connCheckCatalogVer > 0) {
+                    if (lastSyncedCatalogVer == 0) {
+                        lastSyncedCatalogVer = connCheckCatalogVer;
+                    } else if (connCheckCatalogVer != lastSyncedCatalogVer && !ui.syncing) {
+                        lastSyncedCatalogVer = connCheckCatalogVer;
+                        triggerCatalogAutoSync = true;
+                    }
+                }
             }
         }
         pthread_mutex_unlock(&syncLock);
-        if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
+        if (triggerPostLoginSync || triggerCatalogAutoSync) startSync(ui.serverUrl, activeToken);
 
         // Na tela de autorização: gera o código ao conectar, consulta aprovação (~3s) e tenta reconexão offline (~4s)
         if (ui.loginScreen) {

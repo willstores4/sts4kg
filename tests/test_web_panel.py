@@ -141,7 +141,12 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(partial[:4], b"\x7fCNT")
         self.assertIn("bytes 0-4095/8192", hdrs.get("Content-Range", ""))
 
-        # Verificar download da capa
+        # Verificar download da capa e alteração de catalog_version após edição
+        status, _, ai_before_raw = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        ver_before = json.loads(ai_before_raw)["catalog_version"]
+        self.assertGreater(ver_before, 0)
+
         cover_path = urllib.parse.urlparse(exported["cover_url"]).path
         status, _, cover_bytes = self.request("GET", cover_path)
         self.assertEqual(status, 200)
@@ -152,6 +157,9 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 200)
         status, _, _ = self.request("GET", cover_path)
         self.assertEqual(status, 404)
+        status, _, ai_after_raw = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        self.assertNotEqual(json.loads(ai_after_raw)["catalog_version"], ver_before)
 
         # Remover homebrew + PKG do disco
         status, _, _ = self.request("DELETE", f"/api/admin/homebrews/{item['id']}?delete_pkg=1")
