@@ -101,7 +101,7 @@ def gp4():
             if p.is_file()
             and not p.name.startswith(".")
             and p.stat().st_size > 0
-            and p.name not in ("store-icon.png",)
+            and p.name not in ("store-icon.png", "server.txt")
         )
     for p in paths:
         name = p.relative_to(ROOT).as_posix()

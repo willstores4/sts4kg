@@ -12,7 +12,6 @@ REQUIRED_FILES = (
     "eboot.bin",
     "assets/bgft_template.elf",
     "assets/font.ttf",
-    "assets/server.txt",
     "assets/service/cacert.pem",
     "assets/service/TLS-LICENSE.txt",
     "assets/service/TLS-PROVENANCE.txt",
@@ -80,12 +79,15 @@ def verify(extract_root):
         if hashlib.sha256(actual.read_bytes()).digest() != hashlib.sha256(expected.read_bytes()).digest():
             raise RuntimeError(f"PKG payload differs from source: {name}")
 
+    if (uroot / "assets/server.txt").exists():
+        raise RuntimeError("Unexpected server config in extracted PKG: assets/server.txt")
+
     # PkgTool.Core pkg_extract extracts uroot only; PARAM_SFO and ICON0_PNG digests
     # are already verified by pkg_validate above. Check the packaged SFO metadata too.
     verify_sfo((ROOT / "sce_sys/param.sfo").read_bytes())
 
     verify_installer_self((uroot / "eboot.bin").read_bytes())
-    print("Extracted PKG verified: executable, installer auth, trust store, server config, font, SFO and runtime modules match.")
+    print("Extracted PKG verified: executable, installer auth, trust store, fixed eboot server config, font, SFO and runtime modules match.")
 
 
 def main():

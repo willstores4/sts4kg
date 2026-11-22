@@ -65,11 +65,7 @@ eboot.bin: build/hbstore.elf tools/installer-auth.hex Makefile
 sce_sys/param.sfo: tools/package.py
 	python3 tools/package.py sfo
 
-assets/server.txt:
-	@mkdir -p assets
-	printf 'http://192.168.1.8:8765\n' > $@
-
-pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/server.txt assets/bgft_template.elf assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
+pkg.gp4: icons eboot.bin sce_sys/param.sfo tools/package.py assets/font.ttf assets/bgft_template.elf assets/service/cacert.pem assets/service/TLS-LICENSE.txt assets/service/TLS-PROVENANCE.txt sce_sys/icon0.png
 	python3 tools/package.py gp4
 
 build/$(CONTENT_ID).pkg: pkg.gp4
