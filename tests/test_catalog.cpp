@@ -478,9 +478,16 @@ int main() {
     ui.action(BACK);
     assert(ui.query.empty());
 
-    // Testar fluxo da tela de autorização por código na UI
+    // Testar fluxo da tela de autorização por código na UI (incluindo estado inicial conectando/offline)
     ui.loginScreen = true;
     ui.deviceId = "PS4-AA:BB:CC:11:22:33";
+    ui.activationCode.clear();
+    ui.codeRequesting = false;
+    ui.syncing = true;
+    ui.draw();
+    assert(ui.hasSpinnerActivity() && ui.c.pixels.size() == 1920 * 1080);
+    ui.syncing = false;
+
     ui.activationCode = "AB7-K4M";
     ui.activationExpiresIn = 900;
     ui.activationError = "Erro anterior";

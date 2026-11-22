@@ -1131,7 +1131,7 @@ struct UI {
             // Painel esquerdo de marca + informações do servidor e vínculo
             c.rect(0, 0, 700, 1080, 0x08101c);
             c.rect(700, 0, 2, 1080, 0x15253b);
-            c.image(logo, 110, 200, 108, 108);
+            c.image(logo, 230, 74, 240, 240);
             c.text(storeName, 110, 375, 46, white, 540);
             c.text(storeSubtitle, 110, 416, 22, cyan, 540);
             c.rect(110, 452, 460, 2, 0x1a2c44);
@@ -1178,6 +1178,9 @@ struct UI {
                 int codeW = c.textWidth(activationCode, 76);
                 int codeX = 845 + std::max(28, (885 - codeW) / 2);
                 c.text(activationCode, codeX, 462, 76, white, 830);
+            } else if (syncing) {
+                c.spinner(900, 440, 16, 3, spinnerAngle(), 0x163154, 0x5cb8ff);
+                c.text("Conectando ao servidor...", 936, 451, 30, white, 760);
             } else {
                 c.text("Nenhum código ativo no momento", 874, 446, 28, muted, 820);
             }

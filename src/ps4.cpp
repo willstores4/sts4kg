@@ -24,16 +24,19 @@ static std::string syncStatusMsg, syncServerUrl, syncToken;
 static CatalogData syncedCatalog;
 static bool clearCoversOnPublish = false;
 
-static bool syncAuthRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
+static bool syncAuthRequired = false, syncOfflineRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
 static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
 
-static bool codeReqWorking = false, codeReqDone = false, codeReqOk = false;
+static bool codeReqWorking = false, codeReqDone = false, codeReqOk = false, codeReqNetworkFail = false;
 static std::string codeReqServer, codeReqResultErr;
 static DeviceCodeResponse codeReqResult;
 
 static bool codePollWorking = false, codePollDone = false;
 static std::string codePollServer, codePollCode;
 static DeviceCodePollResult codePollResult;
+
+static bool connCheckWorking = false, connCheckDone = false, connCheckReachable = true, connCheckAuthValid = true;
+static std::string connCheckServer, connCheckToken, connCheckErrMsg;
 
 static void setSyncStatus(const std::string& s) {
     pthread_mutex_lock(&syncLock);
@@ -115,8 +118,9 @@ static void* syncThread(void*) {
         return nullptr;
     }
     if (!fetched) {
-        setSyncStatus("Servidor offline (" + urlHostLabel(server) + ") | Pressione OPTIONS para reconectar");
         pthread_mutex_lock(&syncLock);
+        syncOfflineRequired = true;
+        syncStatusMsg = "Servidor offline (" + urlHostLabel(server) + ") | Conecte a internet";
         syncWorking = false;
         pthread_mutex_unlock(&syncLock);
         return nullptr;
@@ -234,6 +238,7 @@ static void* codeReqThread(void*) {
     codeReqWorking = false;
     codeReqDone = true;
     codeReqOk = ok;
+    codeReqNetworkFail = (!posted && httpCode == 0);
     codeReqResultErr = errMsg;
     codeReqResult = parsed;
     pthread_mutex_unlock(&syncLock);
@@ -332,6 +337,63 @@ static void startDeviceCodePoll(const std::string& serverUrl, const std::string&
     }
 }
 
+static void* connCheckThread(void*) {
+    pthread_mutex_lock(&syncLock);
+    std::string server = connCheckServer;
+    std::string token = connCheckToken;
+    pthread_mutex_unlock(&syncLock);
+
+    std::string baseUrl = serverBaseFromCatalogUrl(server);
+    std::string authBody, authErr;
+    int authCode = 0;
+    bool fetched = portalNetworkFetchAuth(baseUrl + "/api/app/auth-info", token, authBody, 64 * 1024, authCode, authErr);
+
+    bool reachable = fetched || (authCode > 0);
+    bool authValid = true;
+    std::string errMsg;
+    if (!reachable) {
+        errMsg = !authErr.empty() ? authErr : ("Sem conexão com o servidor (" + urlHostLabel(server) + ").");
+    } else if (fetched) {
+        AppAuthInfo ai;
+        if (parseAppAuthInfoJson(authBody, ai) && ai.loginRequired && !ai.authenticated) {
+            authValid = false;
+            errMsg = "Sessão expirada ou bloqueada. Autorize este console novamente.";
+        }
+    }
+
+    pthread_mutex_lock(&syncLock);
+    connCheckWorking = false;
+    connCheckDone = true;
+    connCheckReachable = reachable;
+    connCheckAuthValid = authValid;
+    connCheckErrMsg = errMsg;
+    pthread_mutex_unlock(&syncLock);
+    return nullptr;
+}
+
+static void startConnCheck(const std::string& serverUrl, const std::string& token) {
+    if (endsWithJson(serverUrl)) return;
+    pthread_mutex_lock(&syncLock);
+    if (connCheckWorking || syncWorking) {
+        pthread_mutex_unlock(&syncLock);
+        return;
+    }
+    connCheckWorking = true;
+    connCheckDone = false;
+    connCheckServer = serverUrl;
+    connCheckToken = token;
+    pthread_mutex_unlock(&syncLock);
+
+    pthread_t th;
+    if (pthread_create(&th, nullptr, connCheckThread, nullptr) == 0) {
+        pthread_detach(th);
+    } else {
+        pthread_mutex_lock(&syncLock);
+        connCheckWorking = false;
+        pthread_mutex_unlock(&syncLock);
+    }
+}
+
 struct LogoutArgs {
     std::string url;
     std::string token;
@@ -404,8 +466,15 @@ int main() {
         ui.loggedDisplayName = savedSess.displayName;
     }
 
+    // Sempre inicia bloqueado na tela de autorização até o servidor confirmar acesso válido ou loja aberta
+    ui.loginScreen = true;
+    ui.dirty = true;
+
     bool autoCodeRequested = false;
+    bool offlineWaitReconnect = false;
     int codePollFrameAccum = 0;
+    int connCheckFrameAccum = 0;
+    int offlineStreak = 0;
 
     startSync(ui.serverUrl, activeToken);
 
@@ -550,6 +619,7 @@ int main() {
         }
         if (ui.requestNewCodeSignal) {
             ui.requestNewCodeSignal = false;
+            offlineWaitReconnect = false;
             autoCodeRequested = true;
             ui.codeRequesting = true;
             codePollFrameAccum = 0;
@@ -575,7 +645,10 @@ int main() {
             ui.activationField = 0;
             ui.loginScreen = true;
             autoCodeRequested = false;
+            offlineWaitReconnect = false;
             codePollFrameAccum = 0;
+            connCheckFrameAccum = 0;
+            offlineStreak = 0;
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
@@ -694,6 +767,9 @@ int main() {
             ui.dirty = true;
         }
         if (syncAllowBypassLogin) {
+            offlineWaitReconnect = false;
+            offlineStreak = 0;
+            syncOfflineRequired = false;
             if (ui.loginScreen) {
                 ui.loginScreen = false;
                 ui.activationCode.clear();
@@ -706,6 +782,9 @@ int main() {
         if (syncAuthRequired) {
             bool hadSavedSession = syncClearSession;
             syncAuthRequired = false;
+            syncOfflineRequired = false;
+            offlineWaitReconnect = false;
+            offlineStreak = 0;
             if (syncClearSession) {
                 syncClearSession = false;
                 activeToken.clear();
@@ -720,12 +799,24 @@ int main() {
             ui.deleteConfirm = false;
             if (!syncAuthMessage.empty() && (hadSavedSession || ui.activationCode.empty())) {
                 ui.activationError = syncAuthMessage;
+            } else if (ui.activationCode.empty()) {
+                ui.activationError.clear();
             }
             syncAuthMessage.clear();
             if (wasHidden) {
                 autoCodeRequested = false;
                 codePollFrameAccum = 0;
             }
+            ui.dirty = true;
+        }
+        if (syncOfflineRequired) {
+            syncOfflineRequired = false;
+            offlineWaitReconnect = true;
+            ui.loginScreen = true;
+            ui.detail = false;
+            ui.filesModal = false;
+            ui.deleteConfirm = false;
+            ui.activationError = "Sem conexão com a internet / servidor offline (" + urlHostLabel(ui.serverUrl) + ").";
             ui.dirty = true;
         }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
@@ -738,6 +829,9 @@ int main() {
             ui.dirty = true;
         }
         if (syncReady) {
+            offlineWaitReconnect = false;
+            offlineStreak = 0;
+            syncOfflineRequired = false;
             ui.storeName = syncedCatalog.storeName;
             ui.storeSubtitle = syncedCatalog.storeSubtitle;
             ui.categories = syncedCatalog.categories;
@@ -754,6 +848,7 @@ int main() {
             codeReqDone = false;
             ui.codeRequesting = false;
             if (codeReqOk && ui.loginScreen) {
+                offlineWaitReconnect = false;
                 ui.activationCode = codeReqResult.code;
                 ui.activationExpiresIn = codeReqResult.expiresIn;
                 if (!codeReqResult.deviceId.empty()) ui.deviceId = codeReqResult.deviceId;
@@ -763,6 +858,7 @@ int main() {
                 ui.activationCode.clear();
                 ui.activationExpiresIn = 0;
                 ui.activationError = codeReqResultErr;
+                if (codeReqNetworkFail) offlineWaitReconnect = true;
             }
             ui.dirty = true;
         }
@@ -777,6 +873,8 @@ int main() {
                 ui.activationError.clear();
                 ui.loginScreen = false;
                 autoCodeRequested = false;
+                offlineWaitReconnect = false;
+                offlineStreak = 0;
                 codePollFrameAccum = 0;
                 std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
                 ui.notice = "Console autorizado! Bem-vindo, " + greet + "!";
@@ -791,6 +889,13 @@ int main() {
                            ? "Código recusado no painel. Pressione X para gerar outro."
                            : "Código expirado. Pressione X para gerar um novo.");
                 ui.dirty = true;
+            } else if (codePollResult.status == "network_error") {
+                if (ui.loginScreen && ui.activationError != codePollResult.error) {
+                    ui.activationError = !codePollResult.error.empty()
+                        ? codePollResult.error
+                        : "Sem conexão com o servidor para verificar o código.";
+                    ui.dirty = true;
+                }
             } else if (codePollResult.status == "pending") {
                 if (codePollResult.expiresIn > 0) {
                     int prevMins = std::max(1, (ui.activationExpiresIn + 59) / 60);
@@ -804,22 +909,66 @@ int main() {
                 }
             }
         }
+        if (connCheckDone) {
+            connCheckDone = false;
+            if (!connCheckReachable) {
+                ++offlineStreak;
+                if (!ui.primaryActiveDirectTask() || offlineStreak >= 2) {
+                    offlineWaitReconnect = true;
+                    ui.loginScreen = true;
+                    ui.detail = false;
+                    ui.filesModal = false;
+                    ui.deleteConfirm = false;
+                    ui.activationCode.clear();
+                    ui.activationExpiresIn = 0;
+                    ui.activationError = !connCheckErrMsg.empty()
+                        ? connCheckErrMsg
+                        : ("Sem conexão com a internet / servidor offline (" + urlHostLabel(ui.serverUrl) + ").");
+                    ui.dirty = true;
+                }
+            } else if (!connCheckAuthValid) {
+                offlineStreak = 0;
+                offlineWaitReconnect = false;
+                activeToken.clear();
+                unlink((DATA + "/session.tsv").c_str());
+                ui.loggedUsername.clear();
+                ui.loggedDisplayName.clear();
+                ui.activationCode.clear();
+                ui.activationExpiresIn = 0;
+                ui.loginScreen = true;
+                autoCodeRequested = false;
+                codePollFrameAccum = 0;
+                ui.detail = false;
+                ui.filesModal = false;
+                ui.deleteConfirm = false;
+                ui.activationError = connCheckErrMsg;
+                ui.dirty = true;
+            } else {
+                offlineStreak = 0;
+            }
+        }
         pthread_mutex_unlock(&syncLock);
         if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
 
-        // Na tela de autorização: gera o código automaticamente ao abrir e verifica aprovação a cada ~3s
+        // Na tela de autorização: gera o código ao conectar, consulta aprovação (~3s) e tenta reconexão offline (~4s)
         if (ui.loginScreen) {
-            if (!ui.activationCode.empty()) {
+            connCheckFrameAccum = 0;
+            if (offlineWaitReconnect) {
+                codePollFrameAccum = 0;
+                if (!ui.syncing && !ui.codeRequesting && (frame % 240 == 0)) {
+                    startSync(ui.serverUrl, activeToken);
+                }
+            } else if (!ui.activationCode.empty()) {
                 ++codePollFrameAccum;
                 if (codePollFrameAccum >= 180) {
                     codePollFrameAccum = 0;
-                    if (!ui.codeRequesting) {
+                    if (!ui.codeRequesting && !ui.syncing) {
                         startDeviceCodePoll(ui.serverUrl, ui.activationCode);
                     }
                 }
             } else {
                 codePollFrameAccum = 0;
-                if (!autoCodeRequested && !ui.codeRequesting) {
+                if (!ui.syncing && !autoCodeRequested && !ui.codeRequesting) {
                     autoCodeRequested = true;
                     ui.codeRequesting = true;
                     ui.activationError.clear();
@@ -830,6 +979,13 @@ int main() {
         } else {
             autoCodeRequested = false;
             codePollFrameAccum = 0;
+            ++connCheckFrameAccum;
+            if (connCheckFrameAccum >= 300) {
+                connCheckFrameAccum = 0;
+                if (!ui.syncing && !endsWithJson(ui.serverUrl)) {
+                    startConnCheck(ui.serverUrl, activeToken);
+                }
+            }
         }
 
         bool animSpin = ui.hasSpinnerActivity();

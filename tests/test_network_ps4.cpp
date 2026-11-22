@@ -183,6 +183,14 @@ int main() {
     assert(portalNetworkPostJson("http://192.168.1.2:8765/api/app/login", reqJson, "", authOut, 4096, httpCode, authErr));
     assert(httpCode == 200 && lastReqContentLen == reqJson.size() && lastPostBody == reqJson);
     assert(lastDeviceIdHeader == "PS4-AA:BB:CC:11:22:33" && lastContentTypeHeader == "application/json; charset=utf-8" && authOut == mockResponseBody);
+
+    // Garantir que respostas HTTP 201 Created (usadas em /api/app/device-code/request) sejam aceitas
+    responseCode = 201;
+    mockResponseBody = "{\"ok\":true,\"code\":\"AB7-K4M\",\"expires_in\":900}";
+    std::string devReqJson = "{\"device_id\":\"PS4-AA:BB:CC:11:22:33\"}";
+    assert(portalNetworkPostJson("http://192.168.1.2:8765/api/app/device-code/request", devReqJson, "", authOut, 4096, httpCode, authErr));
+    assert(httpCode == 201 && lastPostBody == devReqJson && authOut == mockResponseBody && authErr.empty());
+
     expectedMethod = ORBIS_METHOD_GET;
     mockResponseBody = "page";
 

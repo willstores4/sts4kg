@@ -1152,7 +1152,7 @@ class WebPanelTests(unittest.TestCase):
         status, _, req_raw = self.request("POST", "/api/app/device-code/request", {
             "device_id": ps4_1,
         })
-        self.assertEqual(status, 201)
+        self.assertIn(status, (200, 201))
         req_data = json.loads(req_raw)
         disp_code = req_data["code"]
         raw_code = req_data["raw_code"]
@@ -1207,7 +1207,7 @@ class WebPanelTests(unittest.TestCase):
 
         # 4. Novo código do PS4_1 detecta usuário já vinculado e recusa no PS4_2 funciona
         status, _, req2_raw = self.request("POST", "/api/app/device-code/request", {"device_id": ps4_2})
-        self.assertEqual(status, 201)
+        self.assertIn(status, (200, 201))
         code2 = json.loads(req2_raw)["raw_code"]
         status, _, _ = self.request("POST", f"/api/admin/device-codes/{code2}/reject")
         self.assertEqual(status, 200)

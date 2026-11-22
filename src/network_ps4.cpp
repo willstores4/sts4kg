@@ -209,7 +209,7 @@ static bool performHttp(bool isPost, const std::string& initial, const std::stri
                     if (sceHttpGetAllResponseHeaders(r, &headers, &headerSize) >= 0 && headers && headerSize > 0) {
                         allHeaders.assign(headers, headerSize);
                     }
-                    if (statusResult >= 0 && (code == 200 || (code == 206 && !rangeHeader.empty()))) {
+                    if (statusResult >= 0 && code >= 200 && code < 300 && (code != 206 || !rangeHeader.empty())) {
                         failure = "read_response";
                         uint64_t totalLen = expectedBytes;
                         std::string cl = findResponseHeader(allHeaders, "Content-Length");
