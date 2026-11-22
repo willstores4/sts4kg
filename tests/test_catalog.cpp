@@ -430,12 +430,13 @@ int main() {
     std::string loginParseErr;
     assert(parseAppLoginJson(R"({"ok":true,"token":"tok_abc123","user":{"username":"u1","display_name":"Usuario 1"}})", sess, loginParseErr));
     assert(sess.token == "tok_abc123" && sess.username == "u1" && sess.displayName == "Usuario 1");
-    sess.serverUrl = "http://192.168.1.2:8765";
+    std::string serializedSess = serializeAppSession(sess);
+    assert(serializedSess.find("http") == std::string::npos);
     std::string deepRoot = "build/test-deep/a/b/c";
     assert(ensureDirectoryTree(deepRoot + "/covers"));
-    assert(writeFile(deepRoot + "/session.tsv", serializeAppSession(sess)));
+    assert(writeFile(deepRoot + "/session.tsv", serializedSess));
     AppSession sessRound = loadAppSession(readFile(deepRoot + "/session.tsv"));
-    assert(sessRound.serverUrl == sess.serverUrl && sessRound.token == sess.token &&
+    assert(sessRound.token == sess.token &&
            sessRound.username == sess.username && sessRound.displayName == sess.displayName);
     unlink((deepRoot + "/session.tsv").c_str());
     rmdir((deepRoot + "/covers").c_str());

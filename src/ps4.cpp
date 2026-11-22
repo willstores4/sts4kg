@@ -23,7 +23,6 @@ static bool syncWorking = false, syncReady = false;
 static std::string syncStatusMsg, syncServerUrl, syncToken;
 static CatalogData syncedCatalog;
 static bool clearCoversOnPublish = false;
-static long long syncCatalogVersion = 0;
 
 static bool syncAuthRequired = false, syncOfflineRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
 static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
@@ -35,10 +34,6 @@ static DeviceCodeResponse codeReqResult;
 static bool codePollWorking = false, codePollDone = false;
 static std::string codePollServer, codePollCode;
 static DeviceCodePollResult codePollResult;
-
-static bool connCheckWorking = false, connCheckDone = false, connCheckReachable = true, connCheckAuthValid = true;
-static long long connCheckCatalogVer = 0;
-static std::string connCheckServer, connCheckToken, connCheckErrMsg;
 
 static void setSyncStatus(const std::string& s) {
     pthread_mutex_lock(&syncLock);
@@ -82,7 +77,6 @@ static void* syncThread(void*) {
                 pthread_mutex_lock(&syncLock);
                 if (!ai.storeName.empty()) syncStoreName = ai.storeName;
                 if (!ai.storeSubtitle.empty()) syncStoreSubtitle = ai.storeSubtitle;
-                if (ai.catalogVersion > 0) syncCatalogVersion = ai.catalogVersion;
                 if (ai.loginRequired && !ai.authenticated) {
                     syncAuthRequired = true;
                     syncClearSession = !token.empty();
@@ -293,7 +287,6 @@ static void* codePollThread(void*) {
     if (fetched) {
         parseDeviceCodePollJson(respBody, res);
         if (res.status == "authorized" && !res.session.token.empty()) {
-            res.session.serverUrl = server;
             writeFile(DATA + "/session.tsv", serializeAppSession(res.session));
         } else if (res.status.empty()) {
             res.status = "pending";
@@ -339,68 +332,6 @@ static void startDeviceCodePoll(const std::string& serverUrl, const std::string&
     } else {
         pthread_mutex_lock(&syncLock);
         codePollWorking = false;
-        pthread_mutex_unlock(&syncLock);
-    }
-}
-
-static void* connCheckThread(void*) {
-    pthread_mutex_lock(&syncLock);
-    std::string server = connCheckServer;
-    std::string token = connCheckToken;
-    pthread_mutex_unlock(&syncLock);
-
-    std::string baseUrl = serverBaseFromCatalogUrl(server);
-    std::string authBody, authErr;
-    int authCode = 0;
-    bool fetched = portalNetworkFetchAuth(baseUrl + "/api/app/auth-info", token, authBody, 64 * 1024, authCode, authErr);
-
-    bool reachable = fetched || (authCode > 0);
-    bool authValid = true;
-    long long ver = 0;
-    std::string errMsg;
-    if (!reachable) {
-        errMsg = !authErr.empty() ? authErr : "Sem conexão com o servidor.";
-    } else if (fetched) {
-        AppAuthInfo ai;
-        if (parseAppAuthInfoJson(authBody, ai)) {
-            ver = ai.catalogVersion;
-            if (ai.loginRequired && !ai.authenticated) {
-                authValid = false;
-                errMsg = "Sessão expirada ou bloqueada. Autorize este console novamente.";
-            }
-        }
-    }
-
-    pthread_mutex_lock(&syncLock);
-    connCheckWorking = false;
-    connCheckDone = true;
-    connCheckReachable = reachable;
-    connCheckAuthValid = authValid;
-    connCheckCatalogVer = ver;
-    connCheckErrMsg = errMsg;
-    pthread_mutex_unlock(&syncLock);
-    return nullptr;
-}
-
-static void startConnCheck(const std::string& serverUrl, const std::string& token) {
-    if (endsWithJson(serverUrl)) return;
-    pthread_mutex_lock(&syncLock);
-    if (connCheckWorking || syncWorking) {
-        pthread_mutex_unlock(&syncLock);
-        return;
-    }
-    connCheckWorking = true;
-    connCheckDone = false;
-    connCheckServer = serverUrl;
-    connCheckToken = token;
-    pthread_mutex_unlock(&syncLock);
-
-    pthread_t th;
-    if (pthread_create(&th, nullptr, connCheckThread, nullptr) == 0) {
-        pthread_detach(th);
-    } else {
-        pthread_mutex_lock(&syncLock);
-        connCheckWorking = false;
         pthread_mutex_unlock(&syncLock);
     }
 }
@@ -471,7 +402,7 @@ int main() {
 
     std::string activeToken;
     AppSession savedSess = loadAppSession(readFile(DATA + "/session.tsv"));
-    if (!savedSess.token.empty() && savedSess.serverUrl == ui.serverUrl) {
+    if (!savedSess.token.empty()) {
         activeToken = savedSess.token;
         ui.loggedUsername = savedSess.username;
         ui.loggedDisplayName = savedSess.displayName;
@@ -484,9 +415,6 @@ int main() {
     bool autoCodeRequested = false;
     bool offlineWaitReconnect = false;
     int codePollFrameAccum = 0;
-    int connCheckFrameAccum = 0;
-    int offlineStreak = 0;
-    long long lastSyncedCatalogVer = 0;
 
     startSync(ui.serverUrl, activeToken);
 
@@ -659,8 +587,6 @@ int main() {
             autoCodeRequested = false;
             offlineWaitReconnect = false;
             codePollFrameAccum = 0;
-            connCheckFrameAccum = 0;
-            offlineStreak = 0;
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
@@ -780,7 +706,6 @@ int main() {
         }
         if (syncAllowBypassLogin) {
             offlineWaitReconnect = false;
-            offlineStreak = 0;
             syncOfflineRequired = false;
             if (ui.loginScreen) {
                 ui.loginScreen = false;
@@ -796,7 +721,6 @@ int main() {
             syncAuthRequired = false;
             syncOfflineRequired = false;
             offlineWaitReconnect = false;
-            offlineStreak = 0;
             if (syncClearSession) {
                 syncClearSession = false;
                 activeToken.clear();
@@ -828,7 +752,7 @@ int main() {
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
-            ui.activationError = "Sem conexão com a internet / servidor offline.";
+            ui.activationError = "Sem conexão com a internet / servidor offline. Conecte a internet e pressione OPTIONS.";
             ui.dirty = true;
         }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
@@ -840,12 +764,9 @@ int main() {
             clearCoversOnPublish = false;
             ui.dirty = true;
         }
-        bool triggerCatalogAutoSync = false;
         if (syncReady) {
             offlineWaitReconnect = false;
-            offlineStreak = 0;
             syncOfflineRequired = false;
-            if (syncCatalogVersion > 0) lastSyncedCatalogVer = syncCatalogVersion;
             ui.storeName = syncedCatalog.storeName;
             ui.storeSubtitle = syncedCatalog.storeSubtitle;
             ui.categories = syncedCatalog.categories;
@@ -888,7 +809,6 @@ int main() {
                 ui.loginScreen = false;
                 autoCodeRequested = false;
                 offlineWaitReconnect = false;
-                offlineStreak = 0;
                 codePollFrameAccum = 0;
                 std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
                 ui.notice = "Console autorizado! Bem-vindo, " + greet + "!";
@@ -923,63 +843,13 @@ int main() {
                 }
             }
         }
-        if (connCheckDone) {
-            connCheckDone = false;
-            if (!connCheckReachable) {
-                ++offlineStreak;
-                if (!ui.primaryActiveDirectTask() || offlineStreak >= 2) {
-                    offlineWaitReconnect = true;
-                    ui.loginScreen = true;
-                    ui.detail = false;
-                    ui.filesModal = false;
-                    ui.deleteConfirm = false;
-                    ui.activationCode.clear();
-                    ui.activationExpiresIn = 0;
-                    ui.activationError = !connCheckErrMsg.empty()
-                        ? connCheckErrMsg
-                        : "Sem conexão com a internet / servidor offline.";
-                    ui.dirty = true;
-                }
-            } else if (!connCheckAuthValid) {
-                offlineStreak = 0;
-                offlineWaitReconnect = false;
-                activeToken.clear();
-                unlink((DATA + "/session.tsv").c_str());
-                ui.loggedUsername.clear();
-                ui.loggedDisplayName.clear();
-                ui.activationCode.clear();
-                ui.activationExpiresIn = 0;
-                ui.loginScreen = true;
-                autoCodeRequested = false;
-                codePollFrameAccum = 0;
-                ui.detail = false;
-                ui.filesModal = false;
-                ui.deleteConfirm = false;
-                ui.activationError = connCheckErrMsg;
-                ui.dirty = true;
-            } else {
-                offlineStreak = 0;
-                if (connCheckCatalogVer > 0) {
-                    if (lastSyncedCatalogVer == 0) {
-                        lastSyncedCatalogVer = connCheckCatalogVer;
-                    } else if (connCheckCatalogVer != lastSyncedCatalogVer && !ui.syncing) {
-                        lastSyncedCatalogVer = connCheckCatalogVer;
-                        triggerCatalogAutoSync = true;
-                    }
-                }
-            }
-        }
         pthread_mutex_unlock(&syncLock);
-        if (triggerPostLoginSync || triggerCatalogAutoSync) startSync(ui.serverUrl, activeToken);
+        if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
 
-        // Na tela de autorização: gera o código ao conectar, consulta aprovação (~3s) e tenta reconexão offline (~4s)
+        // Na tela de autorização: gera o código ao abrir e consulta aprovação (~3s); após entrar, sincronização somente manual (OPTIONS / L3)
         if (ui.loginScreen) {
-            connCheckFrameAccum = 0;
             if (offlineWaitReconnect) {
                 codePollFrameAccum = 0;
-                if (!ui.syncing && !ui.codeRequesting && (frame % 240 == 0)) {
-                    startSync(ui.serverUrl, activeToken);
-                }
             } else if (!ui.activationCode.empty()) {
                 ++codePollFrameAccum;
                 if (codePollFrameAccum >= 180) {
@@ -1001,13 +871,6 @@ int main() {
         } else {
             autoCodeRequested = false;
             codePollFrameAccum = 0;
-            ++connCheckFrameAccum;
-            if (connCheckFrameAccum >= 300) {
-                connCheckFrameAccum = 0;
-                if (!ui.syncing && !endsWithJson(ui.serverUrl)) {
-                    startConnCheck(ui.serverUrl, activeToken);
-                }
-            }
         }
 
         bool animSpin = ui.hasSpinnerActivity();

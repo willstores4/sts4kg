@@ -29,7 +29,6 @@ struct AppAuthInfo {
 };
 
 struct AppSession {
-    std::string serverUrl;
     std::string token;
     std::string username;
     std::string displayName;
@@ -1095,8 +1094,7 @@ inline bool parseAppLoginJson(const std::string& raw, AppSession& out, std::stri
 }
 
 inline std::string serializeAppSession(const AppSession& s) {
-    return cleanField(s.serverUrl) + "\t" + cleanField(s.token) + "\t" +
-           cleanField(s.username) + "\t" + cleanField(s.displayName) + "\n";
+    return cleanField(s.token) + "\t" + cleanField(s.username) + "\t" + cleanField(s.displayName) + "\n";
 }
 
 inline AppSession loadAppSession(const std::string& raw) {
@@ -1104,6 +1102,7 @@ inline AppSession loadAppSession(const std::string& raw) {
     size_t e = raw.find('\n');
     std::string line = (e == std::string::npos) ? raw : raw.substr(0, e);
     while (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty()) return out;
     std::vector<std::string> f;
     size_t a = 0;
     for (;;) {
@@ -1112,12 +1111,15 @@ inline AppSession loadAppSession(const std::string& raw) {
         if (b == std::string::npos) break;
         a = b + 1;
     }
-    if (f.size() >= 2) {
-        out.serverUrl = f[0];
+    if (f.size() >= 2 && isHttpUrl(f[0])) {
         out.token = f[1];
+        if (f.size() >= 3) out.username = f[2];
+        if (f.size() >= 4) out.displayName = f[3];
+    } else if (!f.empty()) {
+        out.token = f[0];
+        if (f.size() >= 2) out.username = f[1];
+        if (f.size() >= 3) out.displayName = f[2];
     }
-    if (f.size() >= 3) out.username = f[2];
-    if (f.size() >= 4) out.displayName = f[3];
     return out;
 }
 
