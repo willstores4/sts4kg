@@ -316,7 +316,7 @@ inline std::string resolveServerUrl(const std::string& serverBase, const std::st
     return base + "/" + u;
 }
 
-#define HB_STORE_FIXED_SERVER_URL "http://192.168.1.8:8765"
+#define HB_STORE_FIXED_SERVER_URL "http://ws-teste.willgame.com.br:8765"
 
 inline std::string readDefaultServerUrl(const std::string& baseAssets, const std::string& dataDir) {
     (void)baseAssets;
