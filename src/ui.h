@@ -296,8 +296,8 @@ struct UI {
 
     Canvas c;
     std::string base, data;
-    std::string storeName = "HB_Store";
-    std::string storeSubtitle = "HOMEBREW PS4";
+    std::string storeName = "WILLGAME Store";
+    std::string storeSubtitle = "";
     std::string serverUrl;
     std::string status = "Pronto para sincronizar (OPTIONS)";
     std::string query;

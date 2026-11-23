@@ -133,7 +133,7 @@ inline Game gameForLink(const Game& g, int idx) {
 
 struct CatalogData {
     std::string storeName = "WILLGAME Store";
-    std::string storeSubtitle = "Catálogo Homebrew PS4";
+    std::string storeSubtitle = "CATÁLOGO";
     long long updatedAt = 0;
     std::vector<Category> categories;
     std::vector<Game> items;
