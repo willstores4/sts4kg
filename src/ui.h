@@ -250,12 +250,42 @@ struct Canvas {
         int sw = std::max(1, int(w / scale)), sh = std::max(1, int(h / scale));
         region(b, (b.w - sw) / 2, (b.h - sh) / 2, sw, sh, x, y, w, h);
     }
+
+    // Escala nítida por vizinho mais próximo para manter módulos de QR Code perfeitamente definidos
+    void imageCrisp(const Bitmap& b, int x, int y, int w, int h) {
+        if (b.p.empty() || b.w <= 0 || b.h <= 0 || w <= 0 || h <= 0) return;
+        for (int j = 0; j < h; ++j) {
+            int dy = y + j;
+            if (dy < 0 || dy >= H) continue;
+            int sy = std::min(b.h - 1, (j * b.h) / h);
+            for (int i = 0; i < w; ++i) {
+                int dx = x + i;
+                if (dx < 0 || dx >= W) continue;
+                int sx = std::min(b.w - 1, (i * b.w) / w);
+                const unsigned char* px = &b.p[(size_t(sy) * b.w + sx) * 3];
+                uint32_t color = (uint32_t(px[0]) << 16) | (uint32_t(px[1]) << 8) | uint32_t(px[2]);
+                pixels[dy * W + dx] = 0xff000000 | color;
+            }
+        }
+    }
 };
 
 inline Bitmap loadBitmap(const std::string& p) {
     Bitmap b;
     int c = 0;
     unsigned char* d = stbi_load(p.c_str(), &b.w, &b.h, &c, 3);
+    if (d) {
+        b.p.assign(d, d + size_t(b.w) * b.h * 3);
+        stbi_image_free(d);
+    }
+    return b;
+}
+
+inline Bitmap loadBitmapFromMemory(const unsigned char* data, int len) {
+    Bitmap b;
+    if (!data || len <= 0) return b;
+    int c = 0;
+    unsigned char* d = stbi_load_from_memory(data, len, &b.w, &b.h, &c, 3);
     if (d) {
         b.p.assign(d, d + size_t(b.w) * b.h * 3);
         stbi_image_free(d);
@@ -325,6 +355,9 @@ struct UI {
     int activationExpiresIn = 0;
     std::string loggedUsername, loggedDisplayName, deviceId;
     bool requestNewCodeSignal = false, pollCodeSignal = false, logoutRequest = false;
+    bool loginQrVisible = false;
+    std::string loginQrVersion, loginQrLabel;
+    Bitmap loginQr;
 
     // Fila de instalações / Notificações PS4
     std::vector<InstallPackage> tasks;
@@ -1151,6 +1184,17 @@ struct UI {
             }
             if (!deviceId.empty()) {
                 c.text("ID do Console: " + deviceId, 136, 766, 17, cyan, 470);
+            }
+
+            if (loginQrVisible && !loginQr.p.empty()) {
+                c.rounded(110, 825, 520, 215, 10, 0x0b182a);
+                c.rect(110, 825, 5, 215, cyan);
+                c.rect(132, 844, 178, 178, 0xffffff);
+                c.imageCrisp(loginQr, 134, 846, 174, 174);
+                c.text("QR CODE", 332, 874, 15, cyan, 274);
+                std::string qrLbl = loginQrLabel.empty() ? std::string("Escaneie para suporte / acesso") : loginQrLabel;
+                c.lines(qrLbl, 332, 912, 22, white, 274, 3);
+                c.text("Aponte a câmera do celular", 332, 1006, 16, muted, 274);
             }
 
             // Card principal de Autorização por Código

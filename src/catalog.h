@@ -26,6 +26,10 @@ struct AppAuthInfo {
     std::string storeSubtitle;
     std::string username;
     std::string displayName;
+    bool loginQrEnabled = false;
+    std::string loginQrVersion;
+    std::string loginQrLabel;
+    std::string loginQrUrl;
 };
 
 struct AppSession {
@@ -1093,6 +1097,10 @@ inline bool parseAppAuthInfoJson(const std::string& raw, AppAuthInfo& out) {
     if (auto* cv = root.get("catalog_version")) out.catalogVersion = cv->asInt();
     out.storeName = firstJsonString(root, {"store_name", "storeName"});
     out.storeSubtitle = firstJsonString(root, {"store_subtitle", "storeSubtitle"});
+    if (auto* qe = root.get("login_qr_enabled")) out.loginQrEnabled = qe->asBool();
+    out.loginQrVersion = firstJsonString(root, {"login_qr_version", "loginQrVersion"});
+    out.loginQrLabel = firstJsonString(root, {"login_qr_label", "loginQrLabel"});
+    out.loginQrUrl = firstJsonString(root, {"login_qr_url", "loginQrUrl"});
     if (auto* u = root.get("user")) {
         if (u->type == MiniJson::Value::Object) {
             out.username = firstJsonString(*u, {"username", "user"});

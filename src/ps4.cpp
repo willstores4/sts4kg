@@ -27,6 +27,12 @@ static bool clearCoversOnPublish = false;
 static bool syncAuthRequired = false, syncOfflineRequired = false, syncClearSession = false, syncAllowBypassLogin = false;
 static std::string syncAuthMessage, syncStoreName, syncStoreSubtitle;
 
+static bool syncQrUpdate = false, syncQrAvailable = false;
+static std::string syncQrVersion, syncQrLabel, syncQrBytes;
+static std::string syncLastQrServer, syncLastQrVersion, syncLastQrBytes;
+static bool qrCheckWorking = false;
+static std::string qrCheckServer;
+
 static bool codeReqWorking = false, codeReqDone = false, codeReqOk = false, codeReqNetworkFail = false;
 static std::string codeReqServer, codeReqResultErr;
 static DeviceCodeResponse codeReqResult;
@@ -62,6 +68,116 @@ static bool cleanStaleCovers(const std::string& coversDir, const std::vector<Gam
     return removed;
 }
 
+static void publishLoginQrClear() {
+    pthread_mutex_lock(&syncLock);
+    syncQrUpdate = true;
+    syncQrAvailable = false;
+    syncQrVersion.clear();
+    syncQrLabel.clear();
+    syncQrBytes.clear();
+    pthread_mutex_unlock(&syncLock);
+}
+
+static void refreshLoginQrWithAuthInfo(const std::string& baseUrl, const AppAuthInfo& ai) {
+    if (!ai.loginQrEnabled || ai.loginQrUrl.empty()) {
+        pthread_mutex_lock(&syncLock);
+        syncLastQrVersion.clear();
+        syncLastQrBytes.clear();
+        syncQrUpdate = true;
+        syncQrAvailable = false;
+        syncQrVersion.clear();
+        syncQrLabel.clear();
+        syncQrBytes.clear();
+        pthread_mutex_unlock(&syncLock);
+        return;
+    }
+
+    std::string cachedBytes;
+    pthread_mutex_lock(&syncLock);
+    if (syncLastQrServer == baseUrl && syncLastQrVersion == ai.loginQrVersion && !syncLastQrBytes.empty()) {
+        cachedBytes = syncLastQrBytes;
+    }
+    pthread_mutex_unlock(&syncLock);
+
+    if (cachedBytes.empty()) {
+        std::string dlBytes;
+        std::string qrUrl = resolveServerUrl(baseUrl, ai.loginQrUrl);
+        if (portalNetworkFetch(qrUrl, dlBytes, 512 * 1024)) {
+            int w = 0, h = 0, ch = 0;
+            if (stbi_info_from_memory((const unsigned char*)dlBytes.data(), (int)dlBytes.size(), &w, &h, &ch) &&
+                w > 0 && h > 0 && w <= 2048 && h <= 2048) {
+                cachedBytes.swap(dlBytes);
+            }
+        }
+    }
+
+    pthread_mutex_lock(&syncLock);
+    syncQrUpdate = true;
+    if (!cachedBytes.empty()) {
+        syncLastQrServer = baseUrl;
+        syncLastQrVersion = ai.loginQrVersion;
+        syncLastQrBytes = cachedBytes;
+        syncQrAvailable = true;
+        syncQrVersion = ai.loginQrVersion;
+        syncQrLabel = ai.loginQrLabel;
+        syncQrBytes = std::move(cachedBytes);
+    } else {
+        syncQrAvailable = false;
+        syncQrVersion.clear();
+        syncQrLabel.clear();
+        syncQrBytes.clear();
+    }
+    pthread_mutex_unlock(&syncLock);
+}
+
+static void* qrCheckThread(void*) {
+    pthread_mutex_lock(&syncLock);
+    std::string server = qrCheckServer;
+    std::string token = syncToken;
+    pthread_mutex_unlock(&syncLock);
+
+    std::string baseUrl = serverBaseFromCatalogUrl(server);
+    std::string authBody, authErr;
+    int authCode = 0;
+    if (portalNetworkFetchAuth(baseUrl + "/api/app/auth-info", token, authBody, 64 * 1024, authCode, authErr)) {
+        AppAuthInfo ai;
+        if (parseAppAuthInfoJson(authBody, ai)) {
+            refreshLoginQrWithAuthInfo(baseUrl, ai);
+        } else {
+            publishLoginQrClear();
+        }
+    } else {
+        publishLoginQrClear();
+    }
+
+    pthread_mutex_lock(&syncLock);
+    qrCheckWorking = false;
+    pthread_mutex_unlock(&syncLock);
+    return nullptr;
+}
+
+static void startQrRefresh(const std::string& serverUrl, const std::string& token = "") {
+    if (endsWithJson(serverUrl)) return;
+    pthread_mutex_lock(&syncLock);
+    if (qrCheckWorking) {
+        pthread_mutex_unlock(&syncLock);
+        return;
+    }
+    qrCheckWorking = true;
+    qrCheckServer = serverUrl;
+    syncToken = token;
+    pthread_mutex_unlock(&syncLock);
+
+    pthread_t th;
+    if (pthread_create(&th, nullptr, qrCheckThread, nullptr) == 0) {
+        pthread_detach(th);
+    } else {
+        pthread_mutex_lock(&syncLock);
+        qrCheckWorking = false;
+        pthread_mutex_unlock(&syncLock);
+    }
+}
+
 static void* syncThread(void*) {
     pthread_mutex_lock(&syncLock);
     std::string server = syncServerUrl;
@@ -78,6 +194,7 @@ static void* syncThread(void*) {
         if (portalNetworkFetchAuth(baseUrl + "/api/app/auth-info", token, authBody, 64 * 1024, authCode, authErr)) {
             AppAuthInfo ai;
             if (parseAppAuthInfoJson(authBody, ai)) {
+                refreshLoginQrWithAuthInfo(baseUrl, ai);
                 pthread_mutex_lock(&syncLock);
                 if (!ai.storeName.empty()) syncStoreName = ai.storeName;
                 if (!ai.storeSubtitle.empty()) syncStoreSubtitle = ai.storeSubtitle;
@@ -92,8 +209,14 @@ static void* syncThread(void*) {
                 }
                 if (!ai.loginRequired) syncAllowBypassLogin = true;
                 pthread_mutex_unlock(&syncLock);
+            } else {
+                publishLoginQrClear();
             }
+        } else {
+            publishLoginQrClear();
         }
+    } else {
+        publishLoginQrClear();
     }
 
     int catCode = 0;
@@ -121,6 +244,11 @@ static void* syncThread(void*) {
     if (!fetched) {
         pthread_mutex_lock(&syncLock);
         syncOfflineRequired = true;
+        syncQrUpdate = true;
+        syncQrAvailable = false;
+        syncQrVersion.clear();
+        syncQrLabel.clear();
+        syncQrBytes.clear();
         syncStatusMsg = "Servidor offline | Conecte a internet";
         syncWorking = false;
         pthread_mutex_unlock(&syncLock);
@@ -590,6 +718,7 @@ int main() {
             ui.tab = 0;
             ui.notice = "Sessão encerrada neste console.";
             ui.dirty = true;
+            startQrRefresh(ui.serverUrl, "");
         }
 
         // Ações de Instalação (Notificações BGFT, Local StorageEx, BinLoader ELF ou Download Direto configurado no painel)
@@ -688,7 +817,9 @@ int main() {
         }
 
         // Atualiza UI quando sincronização / código / polling termina ou baixa novas capas
+        static bool qrLostOnOffline = false;
         bool triggerPostLoginSync = false;
+        bool triggerQrRefresh = false;
         pthread_mutex_lock(&syncLock);
         bool wasSyncing = ui.syncing;
         ui.syncing = syncWorking;
@@ -745,11 +876,41 @@ int main() {
         if (syncOfflineRequired) {
             syncOfflineRequired = false;
             offlineWaitReconnect = true;
+            qrLostOnOffline = true;
             ui.loginScreen = true;
+            ui.loginQrVisible = false;
+            ui.loginQr = Bitmap();
+            ui.loginQrVersion.clear();
+            ui.loginQrLabel.clear();
             ui.detail = false;
             ui.filesModal = false;
             ui.deleteConfirm = false;
             ui.activationError = "Sem conexão com a internet / servidor offline. Conecte a internet e pressione OPTIONS.";
+            ui.dirty = true;
+        }
+        if (syncQrUpdate) {
+            syncQrUpdate = false;
+            if (syncQrAvailable && !syncQrBytes.empty()) {
+                Bitmap qrBm = loadBitmapFromMemory((const unsigned char*)syncQrBytes.data(), (int)syncQrBytes.size());
+                if (!qrBm.p.empty()) {
+                    ui.loginQr = std::move(qrBm);
+                    ui.loginQrVersion = syncQrVersion;
+                    ui.loginQrLabel = syncQrLabel;
+                    ui.loginQrVisible = true;
+                    qrLostOnOffline = false;
+                } else {
+                    ui.loginQrVisible = false;
+                    ui.loginQr = Bitmap();
+                    ui.loginQrVersion.clear();
+                    ui.loginQrLabel.clear();
+                }
+            } else {
+                ui.loginQrVisible = false;
+                ui.loginQr = Bitmap();
+                ui.loginQrVersion.clear();
+                ui.loginQrLabel.clear();
+            }
+            syncQrBytes.clear();
             ui.dirty = true;
         }
         if (!syncStatusMsg.empty() && syncStatusMsg != ui.status) {
@@ -786,11 +947,19 @@ int main() {
                 if (!codeReqResult.deviceId.empty()) ui.deviceId = codeReqResult.deviceId;
                 ui.activationError.clear();
                 codePollFrameAccum = 0;
+                if (qrLostOnOffline || !ui.loginQrVisible) triggerQrRefresh = true;
             } else if (!codeReqOk) {
                 ui.activationCode.clear();
                 ui.activationExpiresIn = 0;
                 ui.activationError = codeReqResultErr;
-                if (codeReqNetworkFail) offlineWaitReconnect = true;
+                if (codeReqNetworkFail) {
+                    offlineWaitReconnect = true;
+                    qrLostOnOffline = true;
+                    ui.loginQrVisible = false;
+                    ui.loginQr = Bitmap();
+                    ui.loginQrVersion.clear();
+                    ui.loginQrLabel.clear();
+                }
             }
             ui.dirty = true;
         }
@@ -806,6 +975,7 @@ int main() {
                 ui.loginScreen = false;
                 autoCodeRequested = false;
                 offlineWaitReconnect = false;
+                qrLostOnOffline = false;
                 codePollFrameAccum = 0;
                 std::string greet = ui.loggedDisplayName.empty() ? ui.loggedUsername : ui.loggedDisplayName;
                 ui.notice = "Console autorizado! Bem-vindo, " + greet + "!";
@@ -819,8 +989,17 @@ int main() {
                     : (codePollResult.status == "rejected"
                            ? "Código recusado no painel. Pressione X para gerar outro."
                            : "Código expirado. Pressione X para gerar um novo.");
+                if (qrLostOnOffline && !ui.syncing) triggerQrRefresh = true;
                 ui.dirty = true;
             } else if (codePollResult.status == "network_error") {
+                qrLostOnOffline = true;
+                if (ui.loginQrVisible || !ui.loginQr.p.empty()) {
+                    ui.loginQrVisible = false;
+                    ui.loginQr = Bitmap();
+                    ui.loginQrVersion.clear();
+                    ui.loginQrLabel.clear();
+                    ui.dirty = true;
+                }
                 if (ui.loginScreen && ui.activationError != codePollResult.error) {
                     ui.activationError = !codePollResult.error.empty()
                         ? codePollResult.error
@@ -838,10 +1017,12 @@ int main() {
                     ui.activationError.clear();
                     ui.dirty = true;
                 }
+                if (qrLostOnOffline && !ui.syncing) triggerQrRefresh = true;
             }
         }
         pthread_mutex_unlock(&syncLock);
         if (triggerPostLoginSync) startSync(ui.serverUrl, activeToken);
+        else if (triggerQrRefresh) startQrRefresh(ui.serverUrl, activeToken);
 
         // Na tela de autorização: gera o código ao abrir e consulta aprovação (~3s); após entrar, sincronização somente manual (OPTIONS / L3)
         if (ui.loginScreen) {

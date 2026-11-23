@@ -547,6 +547,24 @@ int main() {
     assert(ui.logoutRequest && !ui.serverPicker);
     ui.logoutRequest = false;
 
+    // Testar parsing de QR Code no /api/app/auth-info e renderização na loginScreen
+    AppAuthInfo qrAi;
+    assert(parseAppAuthInfoJson(
+        R"({"login_required":true,"authenticated":false,"store_name":"WILLGAME Store","store_subtitle":"CATÁLOGO","login_qr_enabled":true,"login_qr_version":"deadbeef12345678","login_qr_label":"Suporte WhatsApp","login_qr_url":"/api/app/login-qr.png?v=deadbeef12345678"})",
+        qrAi));
+    assert(qrAi.loginQrEnabled && qrAi.loginQrVersion == "deadbeef12345678" &&
+           qrAi.loginQrLabel == "Suporte WhatsApp" &&
+           qrAi.loginQrUrl == "/api/app/login-qr.png?v=deadbeef12345678");
+
+    ui.loginScreen = true;
+    ui.loginQrVisible = true;
+    ui.loginQrLabel = qrAi.loginQrLabel;
+    ui.loginQr.w = 8;
+    ui.loginQr.h = 8;
+    ui.loginQr.p.assign(8 * 8 * 3, 255);
+    ui.draw();
+    assert(ui.c.pixels.size() == 1920 * 1080);
+
     std::cout << "Catalog JSON parser, round-trip, device code activation flow and UI rendering passed.\n";
     return 0;
 }

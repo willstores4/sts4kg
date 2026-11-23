@@ -1223,6 +1223,101 @@ class WebPanelTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(json.loads(rej_poll)["status"], "rejected")
 
+    def test_13_login_qr_settings_generation_and_public_endpoint(self):
+        # 1. Por padrão QR vem desativado
+        status, _, auth_raw = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        ai0 = json.loads(auth_raw)
+        self.assertFalse(ai0["login_qr_enabled"])
+        self.assertEqual(ai0["login_qr_url"], "")
+
+        status, _, _ = self.request("GET", "/api/app/login-qr.png")
+        self.assertEqual(status, 404)
+
+        # 2. Conteúdo acima do limite é rejeitado (400)
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "CATÁLOGO",
+            "login_qr_content": "X" * 500,
+        })
+        self.assertEqual(status, 400)
+
+        # 3. Configura QR Code no painel e verifica APIs pública e admin
+        qr_link = "https://wa.me/5511999999999?text=Suporte+PS4"
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "CATÁLOGO",
+            "login_qr_content": qr_link,
+            "login_qr_label": "Atendimento WhatsApp",
+        })
+        self.assertEqual(status, 200)
+
+        status, _, st_raw = self.request("GET", "/api/admin/state")
+        self.assertEqual(status, 200)
+        st = json.loads(st_raw)
+        self.assertTrue(st["login_qr_enabled"])
+        self.assertEqual(st["login_qr_content"], qr_link)
+        self.assertEqual(st["login_qr_label"], "Atendimento WhatsApp")
+        self.assertEqual(len(st["login_qr_version"]), 16)
+
+        status, _, auth_raw2 = self.request("GET", "/api/app/auth-info")
+        self.assertEqual(status, 200)
+        ai1 = json.loads(auth_raw2)
+        self.assertTrue(ai1["login_qr_enabled"])
+        self.assertEqual(ai1["login_qr_label"], "Atendimento WhatsApp")
+        self.assertEqual(ai1["login_qr_version"], st["login_qr_version"])
+        self.assertTrue(ai1["login_qr_url"].startswith("/api/app/login-qr.png?v="))
+
+        # 4. Endpoint público do PS4 serve PNG válido e decodificável
+        status, hdrs, png_bytes = self.request("GET", ai1["login_qr_url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("Content-Type"), "image/png")
+        self.assertTrue(png_bytes.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        try:
+            import cv2  # type: ignore
+            import numpy as np  # type: ignore
+
+            img = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
+            decoded, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+            self.assertEqual(decoded, qr_link)
+        except ImportError:
+            pass
+
+        # Prévia admin com ?text= customizado antes de salvar
+        status, hdrs, prev_png = self.request(
+            "GET", "/api/admin/login-qr.png?text=" + urllib.parse.quote("https://t.me/suporte")
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("Content-Type"), "image/png")
+        self.assertTrue(prev_png.startswith(b"\x89PNG\r\n\x1a\n"))
+
+        # 5. Atualizar outras settings sem enviar login_qr_* preserva o QR existente
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "CATÁLOGO",
+            "require_app_login": "1",
+        })
+        self.assertEqual(status, 200)
+        status, _, st2_raw = self.request("GET", "/api/admin/state")
+        st2 = json.loads(st2_raw)
+        self.assertTrue(st2["login_qr_enabled"])
+        self.assertEqual(st2["login_qr_content"], qr_link)
+
+        # 6. Limpar login_qr_content desativa novamente
+        status, _, _ = self.request("PUT", "/api/admin/settings", {
+            "store_name": "WILLGAME Store",
+            "store_subtitle": "CATÁLOGO",
+            "login_qr_content": "",
+        })
+        self.assertEqual(status, 200)
+        status, _, auth_raw3 = self.request("GET", "/api/app/auth-info")
+        ai2 = json.loads(auth_raw3)
+        self.assertFalse(ai2["login_qr_enabled"])
+        self.assertEqual(ai2["login_qr_url"], "")
+        status, _, _ = self.request("GET", "/api/app/login-qr.png")
+        self.assertEqual(status, 404)
+
 
 if __name__ == "__main__":
     unittest.main()
