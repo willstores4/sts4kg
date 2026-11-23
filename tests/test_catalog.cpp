@@ -148,7 +148,7 @@ int main() {
     assert(!ui.detail);
 
     // Servidor config (IP fixo em HB_STORE_FIXED_SERVER_URL sem gravação de server.txt)
-    assert(readDefaultServerUrl("assets", "build/test-data") == "http://192.168.1.8:8765");
+    assert(readDefaultServerUrl("assets", "build/test-data") == "http://ws-teste.willgame.com.br:8765");
     ui.action(SERVER_CONFIG);
     assert(ui.serverPicker);
     ui.action(CONFIRM);
